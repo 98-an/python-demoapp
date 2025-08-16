@@ -28,7 +28,7 @@ pipeline {
         sh '''
           docker run --rm -v "$PWD":/workspace -w /workspace python:3.11 bash -lc "
             python -m pip install --upgrade pip &&
-            if [ -f requirements.txt ]; then pip install -r requirements.txt; fi &&
+            if [ -f requirements.txt ]; then pip install -r src/requirements.txt; fi &&
             pip install pytest flake8 bandit &&
             flake8 || true &&
             pytest --maxfail=1 --junitxml=pytest-report.xml || true &&
