@@ -1,1 +1,15 @@
-
+.git
+.gitignore
+ci/
+.github/
+.vscode/
+tests/
+build/
+deploy/
+**/_pycache_/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+.DS_Store
