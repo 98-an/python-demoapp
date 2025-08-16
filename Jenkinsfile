@@ -1,52 +1,28 @@
 pipeline {
   agent any
-  options { skipDefaultCheckout(true); timestamps() }
-
   environment {
-    // Si tu veux pousser l'image sur GHCR, change 98-an par ton user GitHub
-    REGISTRY       = "ghcr.io"
-    REGISTRY_IMAGE = "ghcr.io/98-an/python-demoapp"
+    IMAGE_NAME = "ghcr.io/98-an/python-demoapp"
+    IMAGE_TAG  = "build-${env.BUILD_NUMBER}"
+    PUSH_TO_GHCR = "false"   // passe à "true" quand tu auras ajouté les creds GHCR
   }
 
   stages {
     stage('Checkout') {
-      steps {
-        checkout([$class: 'GitSCM',
-          branches: [[name: '*/master']],
-          userRemoteConfigs: [[url: 'https://github.com/98-an/python-demoapp.git', credentialsId: 'git-cred']]
-        ])
-        script {
-          env.SHORT_COMMIT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
-          env.LOCAL_IMAGE  = "demoapp:${env.SHORT_COMMIT}"
-          env.PUSH_IMAGE   = "${REGISTRY_IMAGE}:${env.SHORT_COMMIT}"
-        }
-      }
+      steps { checkout scm }
     }
 
-    stage('Setup Python') {
+    stage('Setup Python + Tests + Bandit') {
+      agent { docker { image 'python:3.11-slim'; args '-u root' } } // pas de sudo nécessaire
       steps {
         sh '''
-          sudo apt-get update -y
-          sudo apt-get install -y python3-venv python3-pip
-          python3 -m venv .venv
-          . .venv/bin/activate
-          pip install -U pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          else
-            pip install flask gunicorn pytest
-          fi
-        '''
-      }
-    }
-
-    stage('Tests & Bandit') {
-      steps {
-        sh '''
-          . .venv/bin/activate
+          python -V
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+          python -m pip install pytest bandit
+          # tests unitaires (tolérants si pas présents)
           pytest -q || true
-          pip install bandit
-          bandit -q -r . || true
+          # scan sécurité Python
+          bandit -r . -x tests || true
         '''
       }
     }
@@ -54,38 +30,48 @@ pipeline {
     stage('Hadolint (Dockerfile)') {
       when { expression { fileExists('Dockerfile') } }
       steps {
-        sh 'docker run --rm -v $PWD:/workspace hadolint/hadolint hadolint /workspace/Dockerfile || true'
+        sh 'docker run --rm -i hadolint/hadolint < Dockerfile || true'
       }
     }
 
     stage('Build Docker image') {
       when { expression { fileExists('Dockerfile') } }
       steps {
-        sh 'docker build -t $LOCAL_IMAGE .'
+        sh '''
+          docker build -t $IMAGE_NAME:$IMAGE_TAG .
+          docker tag  $IMAGE_NAME:$IMAGE_TAG $IMAGE_NAME:latest
+        '''
       }
     }
 
     stage('Push image to GHCR (optionnel)') {
-      when { expression { fileExists('Dockerfile') } }
+      when { expression { env.PUSH_TO_GHCR == "true" && fileExists('Dockerfile') } }
       steps {
-        withCredentials([usernamePassword(credentialsId: 'ghcr-token', usernameVariable: 'GH_USER', passwordVariable: 'GH_PAT')]) {
+        withCredentials([string(credentialsId: 'ghcr-token', variable: 'TOKEN')]) {
           sh '''
-            echo "$GH_PAT" | docker login ghcr.io -u "$GH_USER" --password-stdin
-            docker tag $LOCAL_IMAGE $PUSH_IMAGE
-            docker push $PUSH_IMAGE
+            echo "$TOKEN" | docker login ghcr.io -u 98-an --password-stdin
+            docker push $IMAGE_NAME:$IMAGE_TAG
+            docker push $IMAGE_NAME:latest
           '''
         }
       }
     }
 
     stage('Deploy local (EC2)') {
-      when { expression { fileExists('Dockerfile') } }
       steps {
         sh '''
-          docker rm -f demoapp || true
-          docker run -d --name demoapp -p 5000:5000 $LOCAL_IMAGE
+          # lance l'image locale si buildée, sinon prends l'image publique du projet
+          IMG="$IMAGE_NAME:latest"
+          docker image inspect $IMG >/dev/null 2>&1 || IMG="ghcr.io/benc-uk/python-demoapp:latest"
+
+          docker rm -f demoapp 2>/dev/null || true
+          docker run -d --name demoapp -p 5000:5000 $IMG
         '''
       }
     }
+  }
+
+  post {
+    always { echo "Build finished: ${currentBuild.currentResult}" }
   }
 }
