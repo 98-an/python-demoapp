@@ -1,21 +1,31 @@
 pipeline {
   agent any
-  options { timestamps() }
+  options {
+    skipDefaultCheckout(true)          // évite un double checkout
+    timestamps()
+    disableConcurrentBuilds()
+    timeout(time: 20, unit: 'MINUTES') // garde-fou global
+  }
 
   environment {
-    SNYK_ORG = '98-an'                 // ton slug d’organisation Snyk
+    SNYK_ORG   = '98-an'                        // ton org Snyk (slug)
+    IMAGE_NAME = "demoapp:${env.BUILD_NUMBER}"  // image locale pour les scans
   }
 
   stages {
+
     stage('Checkout') {
-      steps { checkout scm }
+      steps {
+        checkout scm
+        script { env.SHORT_SHA = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim() }
+      }
     }
 
     stage('Java Build & Tests') {
       when { expression { fileExists('pom.xml') } }
       steps {
         sh '''
-          docker run --rm -v "$PWD":/workspace -w /workspace \
+          docker run --rm -v "$PWD":/ws -w /ws \
             maven:3.9-eclipse-temurin-17 mvn -B -DskipTests=false clean test
         '''
         junit '**/target/surefire-reports/*.xml'
@@ -23,39 +33,72 @@ pipeline {
     }
 
     stage('Python Lint & Tests & Bandit') {
-      when { expression { fileExists('requirements.txt') || fileExists('pyproject.toml') } }
+      when {
+        expression {
+          return fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pyproject.toml')
+        }
+      }
       steps {
         sh '''
-          docker run --rm -v "$PWD":/workspace -w /workspace python:3.11 bash -lc "
+          set -eux
+          mkdir -p reports
+          # Détecter le bon requirements
+          if   [ -f src/requirements.txt ]; then REQ=src/requirements.txt
+          elif [ -f requirements.txt ];    then REQ=requirements.txt
+          else REQ=""; fi
+
+          # Exécuter dans une image Python 3.8 (évite la compile de psutil)
+          docker run --rm -v "$PWD":/ws -w /ws python:3.8-slim bash -lc "
             python -m pip install --upgrade pip &&
-            if [ -f requirements.txt ]; then pip install -r src/requirements.txt; fi &&
+            if [ -n \\"$REQ\\" ]; then pip install --prefer-binary -r \\"$REQ\\"; fi &&
             pip install pytest flake8 bandit &&
             flake8 || true &&
             pytest --maxfail=1 --junitxml=pytest-report.xml || true &&
-            bandit -r . -f html -o bandit-report.html || true
+            bandit -r . -f html -o reports/bandit-report.html || true
           "
         '''
         junit allowEmptyResults: true, testResults: 'pytest-report.xml'
-        publishHTML(target: [reportDir: '.', reportFiles: 'bandit-report.html', reportName: 'Bandit - Python SAST', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'bandit-report.html',
+          reportName: 'Bandit - Python SAST', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
     }
 
-    // --- Snyk (SCA) : dépendances appli ---
+    stage('Hadolint (Dockerfile)') {
+      when {
+        expression { return fileExists('Dockerfile') || fileExists('container/Dockerfile') }
+      }
+      steps {
+        sh '''
+          set -eux
+          DF="Dockerfile"; [ -f "$DF" ] || DF="container/Dockerfile"
+          docker run --rm -i hadolint/hadolint < "$DF" || true
+        '''
+      }
+    }
+
     stage('Snyk (SCA)') {
       options { timeout(time: 5, unit: 'MINUTES') }
+      when {
+        expression {
+          return fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pom.xml') || fileExists('pyproject.toml')
+        }
+      }
       steps {
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
           sh '''
             set -eux
             mkdir -p reports
-            docker run --rm -e SNYK_TOKEN="$SNYK_TOKEN" \
+            # Le rapport JSON est écrit DIRECTEMENT dans le workspace (monté en /project)
+            docker run --rm \
+              -e SNYK_TOKEN="$SNYK_TOKEN" \
               -v "$PWD":/project -w /project \
               snyk/snyk-cli:stable snyk test \
                 --org="$SNYK_ORG" --all-projects \
                 --severity-threshold=medium \
                 --json-file-output=reports/snyk-sca.json || true
 
-            docker run --rm -e SNYK_TOKEN="$SNYK_TOKEN" \
+            docker run --rm \
+              -e SNYK_TOKEN="$SNYK_TOKEN" \
               -v "$PWD":/project -w /project \
               snyk/snyk-cli:stable snyk monitor \
                 --org="$SNYK_ORG" --all-projects || true
@@ -64,59 +107,57 @@ pipeline {
               snyk/snyk-to-html -i /work/reports/snyk-sca.json -o /work/reports/snyk-sca.html || true
           '''
         }
-        publishHTML(target: [reportDir: 'reports', reportFiles: 'snyk-sca.html', reportName: 'Snyk Open Source (SCA)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'snyk-sca.html',
+          reportName: 'Snyk Open Source (SCA)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
         archiveArtifacts artifacts: 'reports/**', fingerprint: true, allowEmptyArchive: true
       }
     }
 
-    // --- Build de l'image Docker (si Dockerfile présent) ---
     stage('Build Image (si Dockerfile présent)') {
-      when { expression { fileExists('Dockerfile') } }
+      when { expression { return fileExists('Dockerfile') || fileExists('container/Dockerfile') } }
       steps {
         sh '''
-          IMAGE="demoapp:${BUILD_NUMBER}"
-          docker build -t "$IMAGE" .
-          echo "$IMAGE" > image.txt
+          set -eux
+          DF="Dockerfile"; [ -f "$DF" ] || DF="container/Dockerfile"
+          docker build -f "$DF" -t "$IMAGE_NAME" .
+          echo "$IMAGE_NAME" > image.txt
         '''
         archiveArtifacts artifacts: 'image.txt', fingerprint: true
       }
     }
 
-    // --- Snyk Container : scan de l'image (remplace Trivy) ---
     stage('Snyk Container (image)') {
-      when { expression { fileExists('image.txt') } }
+      when { expression { return fileExists('image.txt') } }
       options { timeout(time: 5, unit: 'MINUTES') }
       steps {
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
           sh '''
             set -eux
-            IMAGE=$(cat image.txt)
             mkdir -p reports
+            IMAGE=$(cat image.txt)
 
-            # Test de l'image
+            # test container : écrit le JSON DANS reports/ du workspace
             docker run --rm \
               -e SNYK_TOKEN="$SNYK_TOKEN" \
               -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$PWD":/project -w /project \
               snyk/snyk-cli:stable snyk container test "$IMAGE" \
                 --org="$SNYK_ORG" \
-                --file=Dockerfile \
                 --severity-threshold=medium \
-                --json-file-output=/tmp/snyk-container.json || true
-            docker cp $(docker ps -alq):/tmp/snyk-container.json reports/snyk-container.json || true
+                --json-file-output=reports/snyk-container.json || true
 
-            # Monitor pour suivi continu dans Snyk
             docker run --rm \
               -e SNYK_TOKEN="$SNYK_TOKEN" \
               -v /var/run/docker.sock:/var/run/docker.sock \
               snyk/snyk-cli:stable snyk container monitor "$IMAGE" \
-                --org="$SNYK_ORG" --file=Dockerfile || true
+                --org="$SNYK_ORG" || true
 
-            # HTML
             docker run --rm -v "$PWD":/work \
               snyk/snyk-to-html -i /work/reports/snyk-container.json -o /work/reports/snyk-container.html || true
           '''
         }
-        publishHTML(target: [reportDir: 'reports', reportFiles: 'snyk-container.html', reportName: 'Snyk Container (Image)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'snyk-container.html',
+          reportName: 'Snyk Container (Image)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
         archiveArtifacts artifacts: 'reports/**', fingerprint: true, allowEmptyArchive: true
       }
     }
