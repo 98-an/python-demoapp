@@ -1,43 +1,48 @@
 pipeline {
   agent any
-  options { timestamps() }
+  options { timestamps(); ansiColor('xterm') }
+
+  environment {
+    IMAGE = "python-demoapp:${BUILD_NUMBER}"
+    PIP_CACHE = "${WORKSPACE}/.pip-cache"
+  }
 
   stages {
     stage('Checkout') {
       steps { checkout scm }
     }
 
-    stage('Java Build & Tests') {
-      when { expression { fileExists('pom.xml') } }
+    stage('Python Lint, Tests, Bandit, pip-audit') {
       steps {
         sh '''
-          docker run --rm -v "$PWD":/workspace -w /workspace \
-            maven:3.9-eclipse-temurin-17 \
-            mvn -B -DskipTests=false clean test
-        '''
-        junit '**/target/surefire-reports/*.xml'
-      }
-    }
+          mkdir -p ${PIP_CACHE}
 
-    stage('Python Lint & Tests & Bandit') {
-      when { expression { fileExists('requirements.txt') || fileExists('pyproject.toml') } }
-      steps {
-        sh '''
-          docker run --rm -v "$PWD":/workspace -w /workspace python:3.11 bash -lc "
-            python -m pip install --upgrade pip &&
-            if [ -f requirements.txt ]; then pip install -r requirements.txt; fi &&
-            pip install pytest flake8 bandit &&
-            flake8 || true &&
-            pytest --maxfail=1 --junitxml=pytest-report.xml || true &&
-            bandit -r . -f html -o bandit-report.html || true
-          "
+          # On exécute tout dans un conteneur Python propre
+          docker run --rm \
+            -v "$PWD":/workspace -w /workspace \
+            -v "${PIP_CACHE}":/root/.cache/pip \
+            python:3.11 bash -lc "
+              python -m pip install --upgrade pip &&
+              if [ -f requirements.txt ]; then pip install -r requirements.txt; fi &&
+              pip install pytest pytest-html flake8 bandit pip-audit &&
+              echo '--- FLAKE8 ---' &&
+              flake8 || true &&
+              echo '--- PYTEST ---' &&
+              pytest -q --junitxml=pytest-report.xml --html=pytest-report.html --self-contained-html || true &&
+              echo '--- BANDIT ---' &&
+              bandit -r . -f html -o bandit-report.html || true &&
+              echo '--- PIP-AUDIT ---' &&
+              if [ -f requirements.txt ]; then pip-audit -r requirements.txt -f json -o pip-audit.json || true; else echo 'no requirements.txt'; fi
+            "
         '''
         junit allowEmptyResults: true, testResults: 'pytest-report.xml'
-        publishHTML(target: [reportDir: '.', reportFiles: 'bandit-report.html', reportName: 'Bandit - Python SAST', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        publishHTML(target: [reportDir: '.', reportFiles: 'pytest-report.html', reportName: 'PyTest Report', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        publishHTML(target: [reportDir: '.', reportFiles: 'bandit-report.html', reportName: 'Bandit (Python SAST)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        archiveArtifacts artifacts: 'pip-audit.json', allowEmptyArchive: true, fingerprint: true
       }
     }
 
-    stage('Dependency-Check (SCA)') {
+    stage('OWASP Dependency-Check (SCA)') {
       steps {
         sh '''
           mkdir -p reports
@@ -49,39 +54,53 @@ pipeline {
             --project "$(basename $PWD)" || true
         '''
         publishHTML(target: [reportDir: 'reports', reportFiles: 'dependency-check-report.html', reportName: 'OWASP Dependency-Check', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-        archiveArtifacts artifacts: 'reports/**', fingerprint: true, allowEmptyArchive: true
+        archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true, fingerprint: true
       }
     }
 
-    stage('Build Image (si Dockerfile présent)') {
+    stage('Build Docker image') {
       when { expression { fileExists('Dockerfile') } }
       steps {
         sh '''
-          IMAGE="demoapp:${BUILD_NUMBER}"
-          docker build -t "$IMAGE" .
-          echo "$IMAGE" > image.txt
+          docker build -t "${IMAGE}" .
+          echo "${IMAGE}" > image.txt
         '''
         archiveArtifacts artifacts: 'image.txt', fingerprint: true
       }
     }
 
-    stage('Trivy Scan (image)') {
+    stage('Smoke test (HTTP 200)') {
+      when { expression { fileExists('image.txt') } }
+      steps {
+        sh '''
+          IMAGE=$(cat image.txt)
+          # Démarre l'app SANS publier de port, puis curl dans son espace réseau
+          docker rm -f demoapp >/dev/null 2>&1 || true
+          docker run -d --name demoapp "${IMAGE}"
+          # Certains repos exposent /health, sinon on teste la page d'accueil
+          docker run --rm --network container:demoapp curlimages/curl:8.6.0 -fsS http://localhost:5000/ | head -n 1
+          docker rm -f demoapp
+        '''
+      }
+    }
+
+    stage('Trivy (scan image)') {
       when { expression { fileExists('image.txt') } }
       steps {
         sh '''
           IMAGE=$(cat image.txt)
           mkdir -p trivy
           docker run --rm -v "$PWD/trivy":/root/.cache/ \
-            aquasec/trivy:latest image --no-progress --exit-code 0 "$IMAGE" > trivy/trivy-image.txt || true
+            aquasec/trivy:latest image --no-progress --exit-code 0 "${IMAGE}" > trivy/trivy-image.txt || true
         '''
-        archiveArtifacts artifacts: 'trivy/**', fingerprint: true, allowEmptyArchive: true
+        archiveArtifacts artifacts: 'trivy/**', allowEmptyArchive: true, fingerprint: true
       }
     }
   }
 
   post {
     always {
-      archiveArtifacts artifacts: '**/target/*.jar, **/*.log', allowEmptyArchive: true
+      archiveArtifacts artifacts: '**/*.log', allowEmptyArchive: true
     }
   }
 }
