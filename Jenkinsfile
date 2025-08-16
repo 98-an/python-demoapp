@@ -1,77 +1,87 @@
 pipeline {
   agent any
-  environment {
-    IMAGE_NAME = "ghcr.io/98-an/python-demoapp"
-    IMAGE_TAG  = "build-${env.BUILD_NUMBER}"
-    PUSH_TO_GHCR = "false"   // passe à "true" quand tu auras ajouté les creds GHCR
-  }
+  options { timestamps() }
 
   stages {
     stage('Checkout') {
       steps { checkout scm }
     }
 
-    stage('Setup Python + Tests + Bandit') {
-      agent { docker { image 'python:3.11-slim'; args '-u root' } } // pas de sudo nécessaire
+    stage('Java Build & Tests') {
+      when { expression { fileExists('pom.xml') } }
       steps {
         sh '''
-          python -V
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
-          python -m pip install pytest bandit
-          # tests unitaires (tolérants si pas présents)
-          pytest -q || true
-          # scan sécurité Python
-          bandit -r . -x tests || true
+          docker run --rm -v "$PWD":/workspace -w /workspace \
+            maven:3.9-eclipse-temurin-17 \
+            mvn -B -DskipTests=false clean test
         '''
+        junit '**/target/surefire-reports/*.xml'
       }
     }
 
-    stage('Hadolint (Dockerfile)') {
+    stage('Python Lint & Tests & Bandit') {
+      when { expression { fileExists('requirements.txt') || fileExists('pyproject.toml') } }
+      steps {
+        sh '''
+          docker run --rm -v "$PWD":/workspace -w /workspace python:3.11 bash -lc "
+            python -m pip install --upgrade pip &&
+            if [ -f requirements.txt ]; then pip install -r requirements.txt; fi &&
+            pip install pytest flake8 bandit &&
+            flake8 || true &&
+            pytest --maxfail=1 --junitxml=pytest-report.xml || true &&
+            bandit -r . -f html -o bandit-report.html || true
+          "
+        '''
+        junit allowEmptyResults: true, testResults: 'pytest-report.xml'
+        publishHTML(target: [reportDir: '.', reportFiles: 'bandit-report.html', reportName: 'Bandit - Python SAST', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+      }
+    }
+
+    stage('Dependency-Check (SCA)') {
+      steps {
+        sh '''
+          mkdir -p reports
+          docker run --rm \
+            -v "$PWD":/src \
+            -v "$PWD/reports":/report \
+            owasp/dependency-check:latest \
+            --scan /src --format HTML --out /report \
+            --project "$(basename $PWD)" || true
+        '''
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'dependency-check-report.html', reportName: 'OWASP Dependency-Check', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        archiveArtifacts artifacts: 'reports/**', fingerprint: true, allowEmptyArchive: true
+      }
+    }
+
+    stage('Build Image (si Dockerfile présent)') {
       when { expression { fileExists('Dockerfile') } }
       steps {
-        sh 'docker run --rm -i hadolint/hadolint < Dockerfile || true'
+        sh '''
+          IMAGE="demoapp:${BUILD_NUMBER}"
+          docker build -t "$IMAGE" .
+          echo "$IMAGE" > image.txt
+        '''
+        archiveArtifacts artifacts: 'image.txt', fingerprint: true
       }
     }
 
-    stage('Build Docker image') {
-      when { expression { fileExists('Dockerfile') } }
+    stage('Trivy Scan (image)') {
+      when { expression { fileExists('image.txt') } }
       steps {
         sh '''
-          docker build -t $IMAGE_NAME:$IMAGE_TAG .
-          docker tag  $IMAGE_NAME:$IMAGE_TAG $IMAGE_NAME:latest
+          IMAGE=$(cat image.txt)
+          mkdir -p trivy
+          docker run --rm -v "$PWD/trivy":/root/.cache/ \
+            aquasec/trivy:latest image --no-progress --exit-code 0 "$IMAGE" > trivy/trivy-image.txt || true
         '''
-      }
-    }
-
-    stage('Push image to GHCR (optionnel)') {
-      when { expression { env.PUSH_TO_GHCR == "true" && fileExists('Dockerfile') } }
-      steps {
-        withCredentials([string(credentialsId: 'ghcr-token', variable: 'TOKEN')]) {
-          sh '''
-            echo "$TOKEN" | docker login ghcr.io -u 98-an --password-stdin
-            docker push $IMAGE_NAME:$IMAGE_TAG
-            docker push $IMAGE_NAME:latest
-          '''
-        }
-      }
-    }
-
-    stage('Deploy local (EC2)') {
-      steps {
-        sh '''
-          # lance l'image locale si buildée, sinon prends l'image publique du projet
-          IMG="$IMAGE_NAME:latest"
-          docker image inspect $IMG >/dev/null 2>&1 || IMG="ghcr.io/benc-uk/python-demoapp:latest"
-
-          docker rm -f demoapp 2>/dev/null || true
-          docker run -d --name demoapp -p 5000:5000 $IMG
-        '''
+        archiveArtifacts artifacts: 'trivy/**', fingerprint: true, allowEmptyArchive: true
       }
     }
   }
 
   post {
-    always { echo "Build finished: ${currentBuild.currentResult}" }
+    always {
+      archiveArtifacts artifacts: '**/target/*.jar, **/*.log', allowEmptyArchive: true
+    }
   }
 }
