@@ -1,1 +1,25 @@
-.
+# Image runtime + build légère
+FROM python:3.8-slim
+
+# Répertoires
+WORKDIR /app
+
+# Dépendances système minimales
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copier et installer les requirements (ta version est sous src/)
+COPY src/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copier le code
+COPY src/ ./src/
+
+# Port d'écoute Flask/Gunicorn
+EXPOSE 5000
+
+# Démarrage (adapter le module si besoin)
+# Si ton app est src/app.py avec app = Flask(__name__) :
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "src.app:app"]
