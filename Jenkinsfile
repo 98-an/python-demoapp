@@ -11,16 +11,16 @@ pipeline {
   environment {
     IMAGE_NAME   = "demoapp:${env.BUILD_NUMBER}"
 
-    // ---- SonarCloud
+    // ---- SonarCloud (désactiver "Automatic Analysis" côté SonarCloud)
     SONAR_HOST_URL    = 'https://sonarcloud.io'
-    SONAR_ORG         = '98-an'                   // <= clé exacte d’org
-    SONAR_PROJECT_KEY = '98-an_python-demoapp'    // <= clé exacte du projet (désactive l’Automatic Analysis côté SC)
+    SONAR_ORG         = '98-an'                    // <- ta clé d’org
+    SONAR_PROJECT_KEY = '98-an_python-demoapp'     // <- clé exacte du projet
 
     // ---- Trivy
     TRIVY_VER   = '0.50.2'
 
     // ---- DAST
-    DAST_TARGET = 'http://13.62.105.249:5000'     // adapte si besoin
+    DAST_TARGET = 'http://13.62.105.249:5000'      // adapte si besoin
 
     // ---- S3
     S3_BUCKET   = 'cryptonext-reports-98an'
