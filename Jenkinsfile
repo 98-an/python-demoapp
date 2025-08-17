@@ -165,77 +165,74 @@ pipeline {
     }
   }
 
-  stage('Publish reports to S3') {
-  when { expression { fileExists('reports') } }
-  steps {
-    withCredentials([[
-      $class: 'AmazonWebServicesCredentialsBinding',
-      credentialsId: 'aws-up'   // l’ID que tu as créé dans Jenkins
-    ]]) {
-      sh '''
-        set -eux
-        # On envoie les rapports dans un chemin par job et par build
-        DEST="s3://${S3_BUCKET}/${JOB_NAME}/${BUILD_NUMBER}/"
-        docker run --rm \
-          -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-          -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
-          -e AWS_DEFAULT_REGION="${AWS_REGION}" \
-          -v "$PWD/reports:/reports" amazon/aws-cli \
-          s3 cp /reports "${DEST}" --recursive --sse AES256
+   stage('Publish reports to S3') {
+      when {
+        expression {
+          fileExists('reports/snyk-sca.json') || fileExists('reports/snyk-container.json') || fileExists('reports/bandit-report.html')
+        }
+      }
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'aws-up',
+                         usernameVariable: 'AWS_ACCESS_KEY_ID',
+                         passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+          sh '''
+            set -eux
+            DEST="s3://${S3_BUCKET}/${JOB_NAME}/${BUILD_NUMBER}/"
 
-        # (optionnel) uploader aussi l'image.txt et les logs s'ils existent
-        if [ -f image.txt ]; then
-          docker run --rm \
-            -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-            -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
-            -e AWS_DEFAULT_REGION="${AWS_REGION}" \
-            -v "$PWD:/w" amazon/aws-cli \
-            s3 cp /w/image.txt "${DEST}"
-        fi
-      '''
-    }
-  }
-}
-  stage('List uploaded S3 files') {
-  steps {
-    withCredentials([[
-      $class: 'AmazonWebServicesCredentialsBinding',
-      credentialsId: 'aws-up'
-    ]]) {
-      sh '''
-        DEST="s3://${S3_BUCKET}/${JOB_NAME}/${BUILD_NUMBER}/"
-        docker run --rm \
-          -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-          -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
-          -e AWS_DEFAULT_REGION="${AWS_REGION}" \
-          amazon/aws-cli s3 ls "$DEST" --recursive || true
-      '''
-    }
-  }
-}
+            docker run --rm \
+              -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+              -v "$PWD/reports:/reports" amazon/aws-cli \
+              s3 cp /reports "${DEST}" --recursive --sse AES256
 
-  stage('Make presigned URLs (1h)') {
-  steps {
-    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-up']]) {
-      sh '''
-        set -eu
-        PREFIX="${JOB_NAME}/${BUILD_NUMBER}"
-        : > presigned-urls.txt
-        for f in reports/*; do
-          key="${PREFIX}/$(basename "$f")"
-          url=$(docker run --rm \
-            -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-            -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
-            -e AWS_DEFAULT_REGION="${AWS_REGION}" \
-            -v "$PWD:/w" amazon/aws-cli \
-            aws s3 presign "s3://${S3_BUCKET}/${key}" --expires-in 3600)
-          echo "${key} -> ${url}" | tee -a presigned-urls.txt
-        done
-      '''
+            if [ -f image.txt ]; then
+              docker run --rm \
+                -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+                -v "$PWD:/w" amazon/aws-cli \
+                s3 cp /w/image.txt "${DEST}"
+            fi
+          '''
+        }
+      }
     }
-    archiveArtifacts artifacts: 'presigned-urls.txt', allowEmptyArchive: true
-  }
-}
+
+    stage('List uploaded S3 files') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'aws-up',
+                         usernameVariable: 'AWS_ACCESS_KEY_ID',
+                         passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+          sh '''
+            DEST="s3://${S3_BUCKET}/${JOB_NAME}/${BUILD_NUMBER}/"
+            docker run --rm \
+              -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+              amazon/aws-cli s3 ls "$DEST" --recursive || true
+          '''
+        }
+      }
+    }
+
+    stage('Make presigned URLs (1h)') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'aws-up',
+                         usernameVariable: 'AWS_ACCESS_KEY_ID',
+                         passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+          sh '''
+            set -eu
+            PREFIX="${JOB_NAME}/${BUILD_NUMBER}"
+            : > presigned-urls.txt
+            for f in reports/*; do
+              [ -f "$f" ] || continue
+              key="${PREFIX}/$(basename "$f")"
+              url=$(docker run --rm \
+                -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+                amazon/aws-cli s3 presign "s3://${S3_BUCKET}/${key}" --expires-in 3600)
+              echo "${key} -> ${url}" | tee -a presigned-urls.txt
+            done
+          '''
+        }
+        archiveArtifacts artifacts: 'presigned-urls.txt', allowEmptyArchive: true
+      }
+    }
+  } // fin stages
 
   post {
     always {
