@@ -1,25 +1,42 @@
 version: "3.8"
+
 services:
-  jenkins:
-    image: jenkins/jenkins:lts
-    ports: ["8080:8080","50000:50000"]
-    volumes:
-      - jenkins_home:/var/jenkins_home
-      - /var/run/docker.sock:/var/run/docker.sock
-  sonarqube:
-    image: sonarqube:lts-community
-    ports: ["9000:9000"]
   postgres:
     image: postgres:15
     environment:
       POSTGRES_USER: sonar
       POSTGRES_PASSWORD: sonar
       POSTGRES_DB: sonar
+    # pas besoin d'exposer 5432 publiquement
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonar"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  sonarqube:
+    image: sonarqube:lts-community
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://postgres:5432/sonar
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: sonar
+    ports: ["9000:9000"]
+
   prometheus:
     image: prom/prometheus
-    volumes: ["./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml"]
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports: ["9090:9090"]
+
   grafana:
     image: grafana/grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
     ports: ["3000:3000"]
-volumes: { jenkins_home: {} }
+    volumes:
+      - ./monitoring/grafana/:/etc/grafana/provisioning/
