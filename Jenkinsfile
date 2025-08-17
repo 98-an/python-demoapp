@@ -7,12 +7,12 @@ pipeline {
     disableConcurrentBuilds()
     timeout(time: 25, unit: 'MINUTES')
   }
-
+1
   environment {
-    IMAGE_NAME   = "demoapp:${env.BUILD_NUMBER}"
+    IMAGE_NAME   = "demoapp:${env.BUILD_NUMBER}"13
     S3_BUCKET    = 'cryptonext-reports-98an'
     AWS_REGION   = 'eu-north-1'
-    DAST_TARGET  = 'http://13.62.105.249:5000'
+    DAST_TARGET  = 'http://16.170.87.165/:5000'
 
     // SonarCloud
     SONAR_HOST_URL   = 'https://sonarcloud.io'
