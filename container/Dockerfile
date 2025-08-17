@@ -32,7 +32,7 @@ ENV PYTHONPATH=/app/src
 EXPOSE 5000
 
 # Si ton fichier **src/app/__init__.py** définit bien `app = Flask(__name__)`
-CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:5000", "app:app"]
+CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:5000", "src.app:create_app()"]
 
 # Si tu utilises une factory: def create_app(): return app
 # CMD ["gunicorn","-w","2","-b","0.0.0.0:5000","app:create_app()"]
