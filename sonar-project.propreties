@@ -1,7 +1,7 @@
 sonar.host.url=https://sonarcloud.io
 sonar.organization=98-an
-sonar.projectKey=python-demoapp
-sonar.sources=src
+sonar.projectKey=98-an_python-demoapp
+sonar.sources=.
 sonar.tests=tests
 sonar.exclusions=**/venv/**,**/*.md
 sonar.python.version=3.11
