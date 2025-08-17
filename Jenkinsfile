@@ -1,17 +1,18 @@
 pipeline {
   agent any
+
   options {
-    skipDefaultCheckout(true)          // évite un double checkout
+    skipDefaultCheckout(true)
     timestamps()
     disableConcurrentBuilds()
-    timeout(time: 20, unit: 'MINUTES') // garde-fou global
+    timeout(time: 20, unit: 'MINUTES')
   }
 
   environment {
-    SNYK_ORG   = '98-an'                        // ton org Snyk (slug)
-    IMAGE_NAME = "demoapp:${env.BUILD_NUMBER}"  // image locale pour les scans
+    SNYK_ORG  = '98-an'
     S3_BUCKET = 'cryptonext-reports-98an'
     AWS_REGION = 'eu-north-1'
+    // IMAGE_NAME sera défini dynamiquement dans le stage Build
   }
 
   stages {
@@ -19,12 +20,14 @@ pipeline {
     stage('Checkout') {
       steps {
         checkout scm
-        script { env.SHORT_SHA = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim() }
+        script {
+          env.SHORT_SHA = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+        }
       }
     }
 
     stage('Java Build & Tests') {
-      when { expression { fileExists('pom.xml') } }
+      when { expression { return fileExists('pom.xml') } }
       steps {
         sh '''
           docker run --rm -v "$PWD":/ws -w /ws \
@@ -44,12 +47,10 @@ pipeline {
         sh '''
           set -eux
           mkdir -p reports
-          # Détecter le bon requirements
           if   [ -f src/requirements.txt ]; then REQ=src/requirements.txt
           elif [ -f requirements.txt ];    then REQ=requirements.txt
           else REQ=""; fi
 
-          # Exécuter dans une image Python 3.8 (évite la compile de psutil)
           docker run --rm -v "$PWD":/ws -w /ws python:3.8-slim bash -lc "
             python -m pip install --upgrade pip &&
             if [ -n \\"$REQ\\" ]; then pip install --prefer-binary -r \\"$REQ\\"; fi &&
@@ -66,9 +67,7 @@ pipeline {
     }
 
     stage('Hadolint (Dockerfile)') {
-      when {
-        expression { return fileExists('Dockerfile') || fileExists('container/Dockerfile') }
-      }
+      when { expression { return fileExists('Dockerfile') || fileExists('container/Dockerfile') } }
       steps {
         sh '''
           set -eux
@@ -90,7 +89,7 @@ pipeline {
           sh '''
             set -eux
             mkdir -p reports
-            # Le rapport JSON est écrit DIRECTEMENT dans le workspace (monté en /project)
+
             docker run --rm \
               -e SNYK_TOKEN="$SNYK_TOKEN" \
               -v "$PWD":/project -w /project \
@@ -118,6 +117,7 @@ pipeline {
     stage('Build Image (si Dockerfile présent)') {
       when { expression { return fileExists('Dockerfile') || fileExists('container/Dockerfile') } }
       steps {
+        script { env.IMAGE_NAME = "demoapp:${BUILD_NUMBER}" }
         sh '''
           set -eux
           DF="Dockerfile"; [ -f "$DF" ] || DF="container/Dockerfile"
@@ -138,7 +138,6 @@ pipeline {
             mkdir -p reports
             IMAGE=$(cat image.txt)
 
-            # test container : écrit le JSON DANS reports/ du workspace
             docker run --rm \
               -e SNYK_TOKEN="$SNYK_TOKEN" \
               -v /var/run/docker.sock:/var/run/docker.sock \
@@ -163,12 +162,14 @@ pipeline {
         archiveArtifacts artifacts: 'reports/**', fingerprint: true, allowEmptyArchive: true
       }
     }
-  }
 
-   stage('Publish reports to S3') {
+    // -------------------- S3 --------------------
+    stage('Publish reports to S3') {
       when {
         expression {
-          fileExists('reports/snyk-sca.json') || fileExists('reports/snyk-container.json') || fileExists('reports/bandit-report.html')
+          return fileExists('reports/snyk-sca.json') ||
+                 fileExists('reports/snyk-container.json') ||
+                 fileExists('reports/bandit-report.html')
         }
       }
       steps {
@@ -232,7 +233,7 @@ pipeline {
         archiveArtifacts artifacts: 'presigned-urls.txt', allowEmptyArchive: true
       }
     }
-  } // fin stages
+  } // <-- fin des stages
 
   post {
     always {
