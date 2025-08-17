@@ -12,8 +12,8 @@ pipeline {
     IMAGE_NAME    = "demoapp:${env.BUILD_NUMBER}"
     S3_BUCKET     = 'cryptonext-reports-98an'
     AWS_REGION    = 'eu-north-1'
-    DAST_TARGET   = 'http://13.62.105.249:5000'   // adapte si besoin
-    SNYK_FAIL_SEV = 'high'                        // medium|high|critical
+    DAST_TARGET   = 'http://13.62.105.249:5000'
+    SNYK_FAIL_SEV = 'high'        // medium|high|critical
   }
 
   stages {
@@ -33,7 +33,7 @@ pipeline {
           docker run --rm -v "$PWD":/ws -w /ws \
             maven:3.9-eclipse-temurin-17 mvn -B -DskipTests=false clean test
         '''
-        junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
+        junit '/target/surefire-reports/*.xml'
       }
     }
 
@@ -55,6 +55,8 @@ pipeline {
           '
         '''
         junit allowEmptyResults: true, testResults: 'pytest-report.xml'
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'bandit-report.html',
+          reportName: 'Bandit - Python SAST', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
     }
 
@@ -73,11 +75,14 @@ pipeline {
       steps {
         sh '''
           set -eux
+          # scan fichiers (pas l'historique) pour éviter l'erreur "not a git repository"
           docker run --rm -v "$PWD":/repo zricethezav/gitleaks:latest \
-            detect -s /repo -f sarif -r /repo/reports/gitleaks.sarif || true
-          # mini page HTML d’info
-          echo "<h1>Gitleaks</h1><p>Voir l'artifact <code>gitleaks.sarif</code></p>" > reports/gitleaks.html
+            detect -s /repo --no-git -f sarif -r /repo/reports/gitleaks.sarif || true
+          # mini page HTML pour le plugin
+          printf '<h2>Gitleaks</h2><p>Rapport SARIF: <code>reports/gitleaks.sarif</code></p>' > reports/gitleaks.html
         '''
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'gitleaks.html',
+          reportName: 'Gitleaks (Secrets)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
         archiveArtifacts artifacts: 'reports/gitleaks.sarif', allowEmptyArchive: true
       }
     }
@@ -88,8 +93,10 @@ pipeline {
           set -eux
           docker run --rm -v "$PWD":/src returntocorp/semgrep:latest \
             semgrep --config p/ci --sarif --output /src/reports/semgrep.sarif --error --timeout 0 || true
-          echo "<h1>Semgrep</h1><p>Voir l'artifact <code>semgrep.sarif</code></p>" > reports/semgrep.html
+          printf '<h2>Semgrep</h2><p>Rapport SARIF: <code>reports/semgrep.sarif</code></p>' > reports/semgrep.html
         '''
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'semgrep.html',
+          reportName: 'Semgrep (SAST)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
         archiveArtifacts artifacts: 'reports/semgrep.sarif', allowEmptyArchive: true
       }
     }
@@ -101,27 +108,30 @@ pipeline {
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
           sh '''
             set -eux
-            mkdir -p reports
-            docker pull snyk/snyk-cli:stable || true
-            if docker image inspect snyk/snyk-cli:stable >/dev/null 2>&1; then
-              docker run --rm -e SNYK_TOKEN="$SNYK_TOKEN" -v "$PWD":/project -w /project \
-                snyk/snyk-cli:stable snyk test --org="$SNYK_ORG" --all-projects \
-                --severity-threshold=medium --json-file-output=reports/snyk-sca.json || true
-            else
-              docker run --rm -v "$PWD":/project -w /project node:18-alpine sh -lc "
-                npm -g i snyk snyk-to-html snyk-to-sarif && SNYK_TOKEN=$SNYK_TOKEN snyk test \
-                --org=$SNYK_ORG --all-projects --severity-threshold=medium \
-                --json-file-output=reports/snyk-sca.json || true &&
-                snyk-to-sarif reports/snyk-sca.json > reports/snyk-sca.sarif || true"
+            TARGET_FILE=""
+            if   [ -f src/requirements.txt ]; then TARGET_FILE="src/requirements.txt"
+            elif [ -f requirements.txt ];    then TARGET_FILE="requirements.txt"
+            elif [ -f pom.xml ];             then TARGET_FILE="pom.xml"
             fi
 
-            docker run --rm -v "$PWD":/work snyk/snyk-to-html \
-              -i /work/reports/snyk-sca.json -o /work/reports/snyk-sca.html || true
-
-            docker run --rm -v "$PWD":/work node:18-alpine sh -lc "
-              npm -g i snyk-to-sarif && snyk-to-sarif /work/reports/snyk-sca.json > /work/reports/snyk-sca.sarif || true"
+            docker run --rm -v "$PWD":/project -w /project node:18-alpine sh -lc "
+              set -eux
+              npm -g i snyk snyk-to-html snyk-to-sarif
+              if [ -n \\"$TARGET_FILE\\" ]; then
+                SNYK_TOKEN=$SNYK_TOKEN snyk test --file=\\"$TARGET_FILE\\" \
+                  --package-manager=pip --org=$SNYK_ORG --severity-threshold=medium \
+                  --json-file-output=reports/snyk-sca.json || true
+              else
+                SNYK_TOKEN=$SNYK_TOKEN snyk test --org=$SNYK_ORG --all-projects \
+                  --severity-threshold=medium --json-file-output=reports/snyk-sca.json || true
+              fi
+              snyk-to-html -i reports/snyk-sca.json -o reports/snyk-sca.html || true
+              snyk-to-sarif reports/snyk-sca.json > reports/snyk-sca.sarif || true
+            "
           '''
         }
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'snyk-sca.html',
+          reportName: 'Snyk Open Source (SCA)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
         archiveArtifacts artifacts: 'reports/snyk-sca.json,reports/snyk-sca.sarif', allowEmptyArchive: true
       }
     }
@@ -147,50 +157,45 @@ pipeline {
           sh '''
             set -eux
             IMAGE=$(cat image.txt)
-            docker pull snyk/snyk-cli:stable || true
-            docker run --rm \
-              -e SNYK_TOKEN="$SNYK_TOKEN" \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              -v "$PWD":/project -w /project \
-              snyk/snyk-cli:stable snyk container test "$IMAGE" \
-                --org="$SNYK_ORG" --severity-threshold=medium \
-                --json-file-output=reports/snyk-container.json || true
-
-            docker run --rm \
-              -e SNYK_TOKEN="$SNYK_TOKEN" \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              snyk/snyk-cli:stable snyk container monitor "$IMAGE" --org="$SNYK_ORG" || true
-
-            docker run --rm -v "$PWD":/work \
-              snyk/snyk-to-html -i /work/reports/snyk-container.json -o /work/reports/snyk-container.html || true
-
-            docker run --rm -v "$PWD":/work node:18-alpine sh -lc "
-              npm -g i snyk-to-sarif && snyk-to-sarif /work/reports/snyk-container.json > /work/reports/snyk-container.sarif || true"
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$PWD":/work -w /work node:18-alpine sh -lc "
+                set -eux
+                npm -g i snyk snyk-to-html snyk-to-sarif
+                SNYK_TOKEN=$SNYK_TOKEN snyk container test $IMAGE \
+                  --org=$SNYK_ORG --severity-threshold=medium \
+                  --json-file-output=reports/snyk-container.json || true
+                snyk-to-html -i reports/snyk-container.json -o reports/snyk-container.html || true
+                snyk-to-sarif reports/snyk-container.json > reports/snyk-container.sarif || true
+              "
           '''
         }
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'snyk-container.html',
+          reportName: 'Snyk Container (Image)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
         archiveArtifacts artifacts: 'reports/snyk-container.json,reports/snyk-container.sarif', allowEmptyArchive: true
       }
     }
 
-    stage('Snyk Gates (fail if >= severity)') {
+    stage('Snyk Gates (fail si ≥ seuil)') {
       steps {
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
           sh '''
             set -eux
-            # Gate SCA si projet applicatif détecté
+            # On coupe seulement si on arrive à lancer Snyk proprement
             if [ -f src/requirements.txt ] || [ -f requirements.txt ] || [ -f pom.xml ] || [ -f pyproject.toml ]; then
-              docker pull snyk/snyk-cli:stable || true
-              docker run --rm -e SNYK_TOKEN="$SNYK_TOKEN" -v "$PWD":/project -w /project \
-                snyk/snyk-cli:stable snyk test --org="$SNYK_ORG" --all-projects \
-                --severity-threshold="${SNYK_FAIL_SEV}"
+              docker run --rm -v "$PWD":/project -w /project node:18-alpine sh -lc "
+                npm -g i snyk >/dev/null 2>&1
+                SNYK_TOKEN=$SNYK_TOKEN snyk test \
+                  --org=$SNYK_ORG --file=$( [ -f src/requirements.txt ] && echo src/requirements.txt || echo requirements.txt ) \
+                  --package-manager=pip --severity-threshold=${SNYK_FAIL_SEV}
+              "
             fi
-            # Gate Container si image construite
             if [ -f image.txt ]; then
               IMAGE=$(cat image.txt)
-              docker run --rm -e SNYK_TOKEN="$SNYK_TOKEN" \
-                -v /var/run/docker.sock:/var/run/docker.sock \
-                snyk/snyk-cli:stable snyk container test "$IMAGE" \
-                --org="$SNYK_ORG" --severity-threshold="${SNYK_FAIL_SEV}"
+              docker run --rm -v /var/run/docker.sock:/var/run/docker.sock node:18-alpine sh -lc "
+                npm -g i snyk >/dev/null 2>&1
+                SNYK_TOKEN=$SNYK_TOKEN snyk container test $IMAGE \
+                  --org=$SNYK_ORG --severity-threshold=${SNYK_FAIL_SEV}
+              "
             fi
           '''
         }
@@ -213,7 +218,6 @@ pipeline {
                 ansible-playbook -i /ansible/inventory.ini /ansible/site.yml \
                   --key-file /id_rsa \
                   -e ansible_user=${SSH_USER} \
-                  -e ansible_ssh_common_args='-o StrictHostKeyChecking=no' \
                   -e image='${IMAGE_NAME}'
               "
           '''
@@ -229,6 +233,8 @@ pipeline {
           docker run --rm -v "$PWD/reports:/zap/wrk" owasp/zap2docker-stable \
             zap-baseline.py -t "$DAST_TARGET" -r zap-baseline.html || true
         '''
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'zap-baseline.html',
+          reportName: 'ZAP Baseline', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
     }
 
@@ -240,10 +246,7 @@ pipeline {
                                           passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
           sh '''
             set -eux
-            if [ -z "$(ls -A reports || true)" ]; then
-              echo "Aucun rapport à publier, on saute."
-              exit 0
-            fi
+            if [ -z "$(ls -A reports || true)" ]; then exit 0; fi
             DEST="s3://${S3_BUCKET}/${JOB_NAME}/${BUILD_NUMBER}/"
             docker run --rm \
               -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
@@ -261,61 +264,29 @@ pipeline {
       }
     }
 
-    stage('Make presigned URLs (1h)') {
+    stage('List uploaded S3 files') {
       steps {
         withCredentials([usernamePassword(credentialsId: 'aws-up',
                                           usernameVariable: 'AWS_ACCESS_KEY_ID',
                                           passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
           sh '''
             set -eux
-            : > presigned-urls.txt
-            if [ -d reports ] && [ -n "$(ls -A reports || true)" ]; then
-              PREFIX="${JOB_NAME}/${BUILD_NUMBER}"
-              for f in reports/*; do
-                key="${PREFIX}/$(basename "$f")"
-                url=$(docker run --rm \
-                  -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-                  -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
-                  -e AWS_DEFAULT_REGION="${AWS_REGION}" \
-                  amazon/aws-cli s3 presign "s3://${S3_BUCKET}/${key}" --expires-in 3600)
-                echo "${key} -> ${url}" | tee -a presigned-urls.txt
-              done
-            fi
+            DEST="s3://${S3_BUCKET}/${JOB_NAME}/${BUILD_NUMBER}/"
+            docker run --rm \
+              -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+              -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+              -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+              amazon/aws-cli s3 ls "$DEST" --recursive || true
           '''
         }
-        archiveArtifacts artifacts: 'presigned-urls.txt,image.txt', allowEmptyArchive: true
       }
     }
   }
 
   post {
     always {
-      // On publie les HTML qui existent (même si le build a échoué)
-      script {
-        sh 'ls -la reports || true'
-        def rpts = [
-          [n:'Bandit - Python SAST',  f:'bandit-report.html'],
-          [n:'Snyk Open Source (SCA)',f:'snyk-sca.html'],
-          [n:'Snyk Container (Image)',f:'snyk-container.html'],
-          [n:'Semgrep (SAST)',        f:'semgrep.html'],
-          [n:'Gitleaks (Secrets)',    f:'gitleaks.html'],
-          [n:'ZAP Baseline',          f:'zap-baseline.html']
-        ]
-        for (r in rpts) {
-          if (fileExists("reports/${r.f}")) {
-            publishHTML(target: [
-              reportDir: 'reports',
-              reportFiles: r.f,
-              reportName: r.n,
-              keepAll: true,
-              alwaysLinkToLastBuild: true,
-              allowMissing: true
-            ])
-          }
-        }
-      }
-      archiveArtifacts artifacts: 'reports/*.html, reports/*.sarif, reports/*.json', allowEmptyArchive: true
-      junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml, pytest-report.xml'
+      // artefacts divers
+      archiveArtifacts artifacts: '/target/.jar, **/.log, reports/.html, reports/.sarif, reports/*.json', allowEmptyArchive: true
     }
   }
 }
