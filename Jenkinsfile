@@ -16,8 +16,8 @@ pipeline {
     DAST_TARGET      = 'http://13.62.105.249:5000'   // adapte si l’IP change
     // ---- SonarCloud
     SONAR_HOST_URL   = 'https://sonarcloud.io'
-    SONAR_ORG        = 'ton-org-sonarcloud'          // <= A RENSEIGNER
-    SONAR_PROJECT_KEY= 'ton-project-key'             // <= A RENSEIGNER
+    SONAR_ORG        = '98-an          // <= A RENSEIGNER
+    SONAR_PROJECT_KEY= '98-an_python-demoapp'             // <= A RENSEIGNER
     // ---- Trivy gates
     TRIVY_FAIL_SEV   = 'HIGH,CRITICAL'
   }
