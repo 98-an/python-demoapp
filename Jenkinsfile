@@ -181,7 +181,7 @@ pipeline {
       }
     }
 
-    /* -------- Gates (fail si vuln ≥ seuil) -------- */
+    /* -------- Gates (fail si vuln ≥ seuil) 
     stage('Snyk Gates (fail si ≥ seuil)') {
       steps {
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
@@ -209,8 +209,7 @@ pipeline {
         }
       }
     }
-
-    /* -------- Deploy via Ansible -------- */
+Deploy via Ansible -------- */
     stage('Deploy (Ansible)') {
       when { expression { fileExists('ansible/site.yml') } }
       steps {
