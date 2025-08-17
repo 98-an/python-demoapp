@@ -12,8 +12,8 @@ pipeline {
     IMAGE_NAME    = "demoapp:${env.BUILD_NUMBER}"
     S3_BUCKET     = 'cryptonext-reports-98an'
     AWS_REGION    = 'eu-north-1'
-    DAST_TARGET   = 'http://13.62.105.249:5000'    // <- adapte si besoin
-    SNYK_FAIL_SEV = 'high'                         // gate: medium | high | critical
+    DAST_TARGET   = 'http://13.62.105.249:5000'   // adapte si besoin
+    SNYK_FAIL_SEV = 'high'                        // medium|high|critical
   }
 
   stages {
@@ -22,7 +22,7 @@ pipeline {
       steps {
         checkout scm
         script { env.SHORT_SHA = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim() }
-        sh 'mkdir -p reports'
+        sh 'rm -rf reports && mkdir -p reports'
       }
     }
 
@@ -33,7 +33,7 @@ pipeline {
           docker run --rm -v "$PWD":/ws -w /ws \
             maven:3.9-eclipse-temurin-17 mvn -B -DskipTests=false clean test
         '''
-        junit '/target/surefire-reports/*.xml'
+        junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
       }
     }
 
@@ -69,33 +69,31 @@ pipeline {
       }
     }
 
-    /* ========== Gitleaks (secrets) -> SARIF ========== */
     stage('Gitleaks (Secrets)') {
       steps {
         sh '''
           set -eux
           docker run --rm -v "$PWD":/repo zricethezav/gitleaks:latest \
             detect -s /repo -f sarif -r /repo/reports/gitleaks.sarif || true
+          # mini page HTML d’info
+          echo "<h1>Gitleaks</h1><p>Voir l'artifact <code>gitleaks.sarif</code></p>" > reports/gitleaks.html
         '''
         archiveArtifacts artifacts: 'reports/gitleaks.sarif', allowEmptyArchive: true
       }
     }
 
-    /* ========== Semgrep (SAST) -> SARIF + HTML ========== */
     stage('Semgrep (SAST)') {
       steps {
         sh '''
           set -eux
-          docker run --rm -v "$PWD":/src returntocorp/semgrep:latest sh -lc '
-            semgrep --config p/ci --sarif --output /src/reports/semgrep.sarif --error --timeout 0 || true;
-            semgrep --config p/ci --html  --output /src/reports/semgrep.html  --error --timeout 0 || true
-          '
+          docker run --rm -v "$PWD":/src returntocorp/semgrep:latest \
+            semgrep --config p/ci --sarif --output /src/reports/semgrep.sarif --error --timeout 0 || true
+          echo "<h1>Semgrep</h1><p>Voir l'artifact <code>semgrep.sarif</code></p>" > reports/semgrep.html
         '''
         archiveArtifacts artifacts: 'reports/semgrep.sarif', allowEmptyArchive: true
       }
     }
 
-    /* ========== Snyk (SCA) ========== */
     stage('Snyk (SCA)') {
       when { expression { fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pom.xml') || fileExists('pyproject.toml') } }
       options { timeout(time: 6, unit: 'MINUTES') }
@@ -104,7 +102,6 @@ pipeline {
           sh '''
             set -eux
             mkdir -p reports
-
             docker pull snyk/snyk-cli:stable || true
             if docker image inspect snyk/snyk-cli:stable >/dev/null 2>&1; then
               docker run --rm -e SNYK_TOKEN="$SNYK_TOKEN" -v "$PWD":/project -w /project \
@@ -118,14 +115,8 @@ pipeline {
                 snyk-to-sarif reports/snyk-sca.json > reports/snyk-sca.sarif || true"
             fi
 
-            docker pull snyk/snyk-to-html || true
-            if docker image inspect snyk/snyk-to-html >/dev/null 2>&1; then
-              docker run --rm -v "$PWD":/work snyk/snyk-to-html \
-                -i /work/reports/snyk-sca.json -o /work/reports/snyk-sca.html || true
-            else
-              docker run --rm -v "$PWD":/work node:18-alpine sh -lc "
-                npm -g i snyk-to-html && snyk-to-html -i /work/reports/snyk-sca.json -o /work/reports/snyk-sca.html || true"
-            fi
+            docker run --rm -v "$PWD":/work snyk/snyk-to-html \
+              -i /work/reports/snyk-sca.json -o /work/reports/snyk-sca.html || true
 
             docker run --rm -v "$PWD":/work node:18-alpine sh -lc "
               npm -g i snyk-to-sarif && snyk-to-sarif /work/reports/snyk-sca.json > /work/reports/snyk-sca.sarif || true"
@@ -135,7 +126,6 @@ pipeline {
       }
     }
 
-    /* ========== Build Image ========== */
     stage('Build Image (si Dockerfile présent)') {
       when { expression { fileExists('Dockerfile') || fileExists('container/Dockerfile') } }
       steps {
@@ -149,7 +139,6 @@ pipeline {
       }
     }
 
-    /* ========== Snyk Container ========== */
     stage('Snyk Container (image)') {
       when { expression { fileExists('image.txt') } }
       options { timeout(time: 6, unit: 'MINUTES') }
@@ -159,7 +148,6 @@ pipeline {
             set -eux
             IMAGE=$(cat image.txt)
             docker pull snyk/snyk-cli:stable || true
-
             docker run --rm \
               -e SNYK_TOKEN="$SNYK_TOKEN" \
               -v /var/run/docker.sock:/var/run/docker.sock \
@@ -173,14 +161,8 @@ pipeline {
               -v /var/run/docker.sock:/var/run/docker.sock \
               snyk/snyk-cli:stable snyk container monitor "$IMAGE" --org="$SNYK_ORG" || true
 
-            docker pull snyk/snyk-to-html || true
-            if docker image inspect snyk/snyk-to-html >/dev/null 2>&1; then
-              docker run --rm -v "$PWD":/work \
-                snyk/snyk-to-html -i /work/reports/snyk-container.json -o /work/reports/snyk-container.html || true
-            else
-              docker run --rm -v "$PWD":/work node:18-alpine sh -lc "
-                npm -g i snyk-to-html && snyk-to-html -i /work/reports/snyk-container.json -o /work/reports/snyk-container.html || true"
-            fi
+            docker run --rm -v "$PWD":/work \
+              snyk/snyk-to-html -i /work/reports/snyk-container.json -o /work/reports/snyk-container.html || true
 
             docker run --rm -v "$PWD":/work node:18-alpine sh -lc "
               npm -g i snyk-to-sarif && snyk-to-sarif /work/reports/snyk-container.json > /work/reports/snyk-container.sarif || true"
@@ -190,20 +172,19 @@ pipeline {
       }
     }
 
-    /* ========== Snyk Gates ========== */
-    stage('Snyk Gates') {
+    stage('Snyk Gates (fail if >= severity)') {
       steps {
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
           sh '''
             set -eux
-            # Gate SCA (refait un test mais ne génère pas de rapport)
+            # Gate SCA si projet applicatif détecté
             if [ -f src/requirements.txt ] || [ -f requirements.txt ] || [ -f pom.xml ] || [ -f pyproject.toml ]; then
+              docker pull snyk/snyk-cli:stable || true
               docker run --rm -e SNYK_TOKEN="$SNYK_TOKEN" -v "$PWD":/project -w /project \
                 snyk/snyk-cli:stable snyk test --org="$SNYK_ORG" --all-projects \
                 --severity-threshold="${SNYK_FAIL_SEV}"
             fi
-
-            # Gate Container
+            # Gate Container si image construite
             if [ -f image.txt ]; then
               IMAGE=$(cat image.txt)
               docker run --rm -e SNYK_TOKEN="$SNYK_TOKEN" \
@@ -216,7 +197,6 @@ pipeline {
       }
     }
 
-    /* ========== Deploy (Ansible) ========== */
     stage('Deploy (Ansible)') {
       when { expression { fileExists('ansible/site.yml') } }
       steps {
@@ -233,6 +213,7 @@ pipeline {
                 ansible-playbook -i /ansible/inventory.ini /ansible/site.yml \
                   --key-file /id_rsa \
                   -e ansible_user=${SSH_USER} \
+                  -e ansible_ssh_common_args='-o StrictHostKeyChecking=no' \
                   -e image='${IMAGE_NAME}'
               "
           '''
@@ -240,7 +221,6 @@ pipeline {
       }
     }
 
-    /* ========== DAST (ZAP Baseline) ========== */
     stage('DAST - ZAP Baseline') {
       options { timeout(time: 8, unit: 'MINUTES') }
       steps {
@@ -252,37 +232,6 @@ pipeline {
       }
     }
 
-    /* ========== Publish HTML (all) ========== */
-    stage('Publish HTML (all)') {
-      always {
-        script {
-          sh 'ls -la reports || true'   // debug: voir ce qui existe
-          def reports = [
-            [name: 'Bandit - Python SAST', file: 'bandit-report.html'],
-            [name: 'Snyk Open Source (SCA)', file: 'snyk-sca.html'],
-            [name: 'Snyk Container (Image)', file: 'snyk-container.html'],
-            [name: 'Semgrep (SAST)',        file: 'semgrep.html'],
-            [name: 'ZAP Baseline',          file: 'zap-baseline.html']
-          ]
-          for (r in reports) {
-            if (fileExists("reports/${r.file}")) {
-              publishHTML(target: [
-                reportDir: 'reports',
-                reportFiles: r.file,
-                reportName: r.name,
-                keepAll: true,
-                alwaysLinkToLastBuild: true,
-                allowMissing: true
-          ])
-        }
-      }
-    }
-     archiveArtifacts artifacts: 'reports/*.html, reports/*.sarif, reports/*.json', allowEmptyArchive: true
-    junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
-      }
-    }
-
-    /* ========== Upload S3 + URLs signées ========== */
     stage('Publish reports to S3') {
       when { expression { fileExists('reports') } }
       steps {
@@ -307,24 +256,6 @@ pipeline {
               -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
               -e AWS_DEFAULT_REGION="${AWS_REGION}" \
               -v "$PWD:/w" amazon/aws-cli s3 cp /w/image.txt "${DEST}" || true
-          '''
-        }
-      }
-    }
-
-    stage('List uploaded S3 files') {
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'aws-up',
-                                          usernameVariable: 'AWS_ACCESS_KEY_ID',
-                                          passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
-          sh '''
-            set -eux
-            DEST="s3://${S3_BUCKET}/${JOB_NAME}/${BUILD_NUMBER}/"
-            docker run --rm \
-              -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-              -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
-              -e AWS_DEFAULT_REGION="${AWS_REGION}" \
-              amazon/aws-cli s3 ls "$DEST" --recursive || true
           '''
         }
       }
@@ -359,7 +290,32 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: '/target/.jar, **/.log', allowEmptyArchive: true
+      // On publie les HTML qui existent (même si le build a échoué)
+      script {
+        sh 'ls -la reports || true'
+        def rpts = [
+          [n:'Bandit - Python SAST',  f:'bandit-report.html'],
+          [n:'Snyk Open Source (SCA)',f:'snyk-sca.html'],
+          [n:'Snyk Container (Image)',f:'snyk-container.html'],
+          [n:'Semgrep (SAST)',        f:'semgrep.html'],
+          [n:'Gitleaks (Secrets)',    f:'gitleaks.html'],
+          [n:'ZAP Baseline',          f:'zap-baseline.html']
+        ]
+        for (r in rpts) {
+          if (fileExists("reports/${r.f}")) {
+            publishHTML(target: [
+              reportDir: 'reports',
+              reportFiles: r.f,
+              reportName: r.n,
+              keepAll: true,
+              alwaysLinkToLastBuild: true,
+              allowMissing: true
+            ])
+          }
+        }
+      }
+      archiveArtifacts artifacts: 'reports/*.html, reports/*.sarif, reports/*.json', allowEmptyArchive: true
+      junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml, pytest-report.xml'
     }
   }
 }
