@@ -1,0 +1,20 @@
+---
+- hosts: demo
+  become: yes
+  tasks:
+    - name: Ensure docker is present
+      apt:
+        name: docker.io
+        state: present
+      tags: [deps]
+
+    - name: Pull image built by CI (exemple local)
+      command: docker pull {{ image | default('demoapp:latest') }}
+      changed_when: true
+
+    - name: Run container
+      command: >
+        docker run -d --restart unless-stopped --name demoapp
+        -p 5000:5000 {{ image | default('demoapp:latest') }}
+      args: { warn: false }
+      changed_when: true
