@@ -1,0 +1,8 @@
+rules:
+  - id: generic-dangerous-eval
+    languages: [python]
+    message: Avoid eval/exec
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+    severity: ERROR
