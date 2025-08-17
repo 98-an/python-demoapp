@@ -254,30 +254,31 @@ pipeline {
 
     /* ========== Publish HTML (all) ========== */
     stage('Publish HTML (all)') {
-      steps {
+      always {
         script {
-          if (fileExists('reports/bandit-report.html')) {
-            publishHTML(target: [reportDir: 'reports', reportFiles: 'bandit-report.html',
-              reportName: 'Bandit - Python SAST', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-          }
-          if (fileExists('reports/snyk-sca.html')) {
-            publishHTML(target: [reportDir: 'reports', reportFiles: 'snyk-sca.html',
-              reportName: 'Snyk Open Source (SCA)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-          }
-          if (fileExists('reports/snyk-container.html')) {
-            publishHTML(target: [reportDir: 'reports', reportFiles: 'snyk-container.html',
-              reportName: 'Snyk Container (Image)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-          }
-          if (fileExists('reports/semgrep.html')) {
-            publishHTML(target: [reportDir: 'reports', reportFiles: 'semgrep.html',
-              reportName: 'Semgrep (SAST)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-          }
-          if (fileExists('reports/zap-baseline.html')) {
-            publishHTML(target: [reportDir: 'reports', reportFiles: 'zap-baseline.html',
-              reportName: 'ZAP Baseline', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-          }
+          sh 'ls -la reports || true'   // debug: voir ce qui existe
+          def reports = [
+            [name: 'Bandit - Python SAST', file: 'bandit-report.html'],
+            [name: 'Snyk Open Source (SCA)', file: 'snyk-sca.html'],
+            [name: 'Snyk Container (Image)', file: 'snyk-container.html'],
+            [name: 'Semgrep (SAST)',        file: 'semgrep.html'],
+            [name: 'ZAP Baseline',          file: 'zap-baseline.html']
+          ]
+          for (r in reports) {
+            if (fileExists("reports/${r.file}")) {
+              publishHTML(target: [
+                reportDir: 'reports',
+                reportFiles: r.file,
+                reportName: r.name,
+                keepAll: true,
+                alwaysLinkToLastBuild: true,
+                allowMissing: true
+          ])
         }
-        archiveArtifacts artifacts: 'reports/*.html', allowEmptyArchive: true
+      }
+    }
+     archiveArtifacts artifacts: 'reports/*.html, reports/*.sarif, reports/*.json', allowEmptyArchive: true
+    junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
       }
     }
 
