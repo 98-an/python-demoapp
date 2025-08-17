@@ -1,31 +1,21 @@
 pipeline {
   agent any
 
-  parameters {
-    string(
-      name: 'DAST_TARGET',
-      defaultValue: '',
-      description: 'URL cible pour ZAP. Laisse vide pour scanner le conteneur déployé localement (http://demoapp-ansible:5000 via réseau Docker).'
-    )
-  }
-
   options {
     timestamps()
     disableConcurrentBuilds()
     ansiColor('xterm')
     timeout(time: 30, unit: 'MINUTES')
-    skipDefaultCheckout(false)
   }
 
   environment {
-    // --- Vars globales ---
+    // --- Variables globales ---
     SNYK_ORG      = '98-an'
-    SNYK_FAIL_SEV = 'high'                 // échoue si vuln >= ce seuil
+    SNYK_FAIL_SEV = 'high'                   // échoue si vuln >= ce seuil
     IMAGE_NAME    = "demoapp:${env.BUILD_NUMBER}"
-    PY_IMAGE      = 'python:3.8-slim'      // 3.8 pour éviter les wheels manquants (psutil==5.8.0)
+    PY_IMAGE      = 'python:3.11-slim'
     S3_BUCKET     = 'cryptonext-reports-98an'
     AWS_REGION    = 'eu-north-1'
-    DAST_TARGET = 'http://13.62.105.249:5000'
   }
 
   stages {
@@ -76,10 +66,12 @@ pipeline {
         sh '''
           set -eux
           mkdir -p reports
+          # Semgrep (utilise règles locales si présentes, sinon pack p/ci)
           CFG="p/ci"; [ -f security/semgrep-rules.yml ] && CFG="security/semgrep-rules.yml"
           docker run --rm -v "$PWD":/work -w /work semgrep/semgrep:latest \
             semgrep ci --config "$CFG" --sarif --output reports/semgrep.sarif || true
 
+          # Gitleaks (secrets)
           docker run --rm -v "$PWD":/repo -w /repo gitleaks/gitleaks:latest detect \
             -s /repo -f sarif -r /repo/reports/gitleaks.sarif --no-git || true
         '''
@@ -98,7 +90,7 @@ pipeline {
       }
     }
 
-    stage('Build Image') {
+    stage('Build Image (si Dockerfile présent)') {
       when { expression { fileExists('Dockerfile') || fileExists('container/Dockerfile') } }
       steps {
         sh '''
@@ -111,50 +103,6 @@ pipeline {
       }
     }
 
-    // ---------- Déploiement local via ANSIBLE (gère conteneur sur l’EC2) ----------
-    stage('Deploy (Ansible - local Docker)') {
-      when { expression { return fileExists('image.txt') } }
-      steps {
-        sh '''
-          set -eux
-          mkdir -p ansible
-
-          # inventaire minimal
-          if [ ! -f ansible/inventory.ini ]; then
-            cat > ansible/inventory.ini <<'INV'
-[local]
-localhost ansible_connection=local
-INV
-          fi
-
-          # playbook minimal (utilise CLI Docker pour éviter les dépendances)
-          if [ ! -f ansible/playbook.yml ]; then
-            cat > ansible/playbook.yml <<'YML'
-- hosts: local
-  gather_facts: false
-  vars:
-    container_name: demoapp-ansible
-    app_port: 5000
-  tasks:
-    - name: Create user-defined network (for ZAP to reach container by name)
-      shell: docker network create appnet || true
-
-    - name: Stop previous container
-      shell: docker rm -f {{ container_name }} || true
-
-    - name: Run new container on appnet
-      shell: docker run -d --name {{ container_name }} --network appnet -p {{ app_port }}:5000 {{ image_name }}
-YML
-          fi
-
-          IMAGE=$(cat image.txt)
-          docker run --rm -v "$PWD/ansible:/ansible" -v /var/run/docker.sock:/var/run/docker.sock -w /ansible \
-            cytopia/ansible:latest ansible-playbook -i inventory.ini playbook.yml --extra-vars "image_name=$IMAGE"
-        '''
-      }
-    }
-
-    // ---------- Snyk SCA avec gate ----------
     stage('Snyk (SCA) + Gate') {
       when { expression { fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pom.xml') || fileExists('pyproject.toml') } }
       options { timeout(time: 8, unit: 'MINUTES') }
@@ -171,6 +119,7 @@ YML
                 --severity-threshold='"${SNYK_FAIL_SEV}"' \
                 --json-file-output=reports/snyk-sca.json || EXIT=$?
 
+            # HTML
             docker run --rm -v "$PWD":/work snyk/snyk-to-html \
               -i /work/reports/snyk-sca.json -o /work/reports/snyk-sca.html || true
 
@@ -193,32 +142,6 @@ YML
       }
     }
 
-    // ---------- DAST : ZAP Baseline ----------
-    stage('DAST - OWASP ZAP (baseline)') {
-      when { expression { fileExists('image.txt') } }
-      steps {
-        sh '''
-          set -eux
-          mkdir -p reports
-
-          TARGET="${DAST_TARGET}"
-          ZAP_NET=""
-          if [ -z "$TARGET" ]; then
-            # si pas de cible fournie, on scanne le conteneur déployé via Ansible
-            TARGET="http://demoapp-ansible:5000"
-            ZAP_NET="--network appnet"
-          fi
-
-          docker run --rm $ZAP_NET -v "$PWD/reports:/zap/wrk" owasp/zap2docker-stable \
-            zap-baseline.py -t "$TARGET" -r zap-baseline.html -x zap-baseline.xml -m 5 -d || true
-        '''
-        publishHTML(target: [reportDir: 'reports', reportFiles: 'zap-baseline.html',
-          reportName: 'OWASP ZAP Baseline (DAST)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-        archiveArtifacts artifacts: 'reports/zap-baseline.*', fingerprint: true, allowEmptyArchive: true
-      }
-    }
-
-    // ---------- Snyk Container sur l'image ----------
     stage('Snyk Container (image) + Gate') {
       when { expression { fileExists('image.txt') } }
       options { timeout(time: 8, unit: 'MINUTES') }
@@ -238,9 +161,9 @@ YML
                 --severity-threshold='"${SNYK_FAIL_SEV}"' \
                 --json-file-output=/tmp/snyk-container.json || EXIT=$?
 
+            # Récupère le JSON puis transforme en HTML
             CID=$(docker ps -alq || true)
             [ -n "$CID" ] && docker cp "$CID":/tmp/snyk-container.json reports/snyk-container.json || true
-
             docker run --rm -v "$PWD":/work snyk/snyk-to-html \
               -i /work/reports/snyk-container.json -o /work/reports/snyk-container.html || true
 
@@ -263,7 +186,26 @@ YML
       }
     }
 
-    // ---------- Publication S3 ----------
+    stage('DAST - OWASP ZAP (baseline)') {
+      when { expression { fileExists('image.txt') } }
+      steps {
+        sh '''
+          set -eux
+          mkdir -p reports
+          docker network create zapnet || true
+          docker rm -f demoapp-dast || true
+          docker run -d --rm --name demoapp-dast --network zapnet -p 5000:5000 "$(cat image.txt)"
+          sleep 6
+          docker run --rm --network zapnet -v "$PWD/reports:/zap/wrk" owasp/zap2docker-stable \
+            zap-baseline.py -t http://demoapp-dast:5000 -r zap-baseline.html -x zap-baseline.xml -d -m 5 || true
+          docker rm -f demoapp-dast || true
+        '''
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'zap-baseline.html',
+          reportName: 'OWASP ZAP Baseline (DAST)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        archiveArtifacts artifacts: 'reports/zap-baseline.*', fingerprint: true, allowEmptyArchive: true
+      }
+    }
+
     stage('Publish reports to S3') {
       when { expression { fileExists('reports') } }
       steps {
