@@ -233,12 +233,12 @@ pipeline {
   }
 
   stage('Test SSH to target') {
-  steps {
-    sshagent(credentials: ['ansible-ssh']) {
-      sh 'ssh -o StrictHostKeyChecking=no ubuntu@13.62.105.249 "whoami && uname -a"'
+    steps {
+      sshagent(credentials: ['ansible-ssh']) {
+        sh 'ssh -o StrictHostKeyChecking=no ubuntu@13.62.105.249 "whoami && uname -a"'
+      }
     }
   }
-}
 
   post {
     always {
