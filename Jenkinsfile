@@ -214,30 +214,31 @@ pipeline {
     stage('Make presigned URLs (1h)') {
       steps {
         withCredentials([usernamePassword(credentialsId: 'aws-up',
-                         usernameVariable: 'AWS_ACCESS_KEY_ID',
-                         passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                                      usernameVariable: 'AWS_ACCESS_KEY_ID',
+                                      passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
           sh '''
-            set -eu
-            PREFIX="${JOB_NAME}/${BUILD_NUMBER}"
+            set -euo pipefail
+            DEST_PREFIX="${JOB_NAME}/${BUILD_NUMBER}"
+            BUCKET="${S3_BUCKET}"
             : > presigned-urls.txt
-            for f in reports/*; do
-              [ -f "$f" ] || continue
-              key="${PREFIX}/$(basename "$f")"
+
+            # Récupère la liste des objets déjà uploadés dans s3://BUCKET/DEST_PREFIX/
+            docker run --rm \
+            -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+            amazon/aws-cli s3api list-objects-v2 \
+              --bucket "$BUCKET" --prefix "$DEST_PREFIX/" \
+              --query "Contents[].Key" --output text | tr '\\t' '\\n' > keys.txt
+
+            # Présigne chaque objet pour 1h
+            while read -r key; do
+              [ -z "$key" ] && continue
               url=$(docker run --rm \
                 -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_DEFAULT_REGION="${AWS_REGION}" \
-                amazon/aws-cli s3 presign "s3://${S3_BUCKET}/${key}" --expires-in 3600)
+                amazon/aws-cli s3 presign "s3://${BUCKET}/${key}" --expires-in 3600)
               echo "${key} -> ${url}" | tee -a presigned-urls.txt
-            done
+            done < keys.txt
           '''
-        }
-        archiveArtifacts artifacts: 'presigned-urls.txt', allowEmptyArchive: true
-      }
     }
-  } // <-- fin des stages
-
-  post {
-    always {
-      archiveArtifacts artifacts: '**/target/*.jar, **/*.log', allowEmptyArchive: true
-    }
+    archiveArtifacts artifacts: 'presigned-urls.txt', allowEmptyArchive: true
   }
 }
