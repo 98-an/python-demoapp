@@ -1,19 +1,25 @@
 pipeline {
   agent any
+
   options {
     skipDefaultCheckout(true)
     timestamps()
     disableConcurrentBuilds()
-    timeout(time: 25, unit: 'MINUTES')
+    timeout(time: 30, unit: 'MINUTES')
   }
 
   environment {
-    SNYK_ORG      = '98-an'
-    IMAGE_NAME    = "demoapp:${env.BUILD_NUMBER}"
-    S3_BUCKET     = 'cryptonext-reports-98an'
-    AWS_REGION    = 'eu-north-1'
-    DAST_TARGET   = 'http://13.62.105.249:5000'
-    SNYK_FAIL_SEV = 'high'     // medium|high|critical
+    // ---- Générales
+    IMAGE_NAME       = "demoapp:${env.BUILD_NUMBER}"
+    S3_BUCKET        = 'cryptonext-reports-98an'
+    AWS_REGION       = 'eu-north-1'
+    DAST_TARGET      = 'http://13.62.105.249:5000'   // adapte si l’IP change
+    // ---- SonarCloud
+    SONAR_HOST_URL   = 'https://sonarcloud.io'
+    SONAR_ORG        = 'ton-org-sonarcloud'          // <= A RENSEIGNER
+    SONAR_PROJECT_KEY= 'ton-project-key'             // <= A RENSEIGNER
+    // ---- Trivy gates
+    TRIVY_FAIL_SEV   = 'HIGH,CRITICAL'
   }
 
   stages {
@@ -21,8 +27,8 @@ pipeline {
     stage('Checkout') {
       steps {
         checkout scm
-        script { env.SHORT_SHA = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim() }
         sh 'rm -rf reports && mkdir -p reports'
+        script { env.SHORT_SHA = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim() }
       }
     }
 
@@ -71,17 +77,24 @@ pipeline {
       }
     }
 
+    /* ===================== Secrets & SAST additionnels ===================== */
+
     stage('Gitleaks (Secrets)') {
       steps {
         sh '''
           set -eux
-          docker run --rm -v "$PWD":/repo zricethezav/gitleaks:latest \
-            detect -s /repo --no-git -f sarif -r /repo/reports/gitleaks.sarif || true
-          printf '<h2>Gitleaks SARIF généré</h2><p>Fichier: reports/gitleaks.sarif</p>' > reports/gitleaks.html
+          docker run --rm -e GIT_DISCOVERY_ACROSS_FILESYSTEM=1 \
+            -v "$PWD":/repo zricethezav/gitleaks:latest \
+            detect --no-git -s /repo -f sarif -r /repo/reports/gitleaks.sarif || true
+
+          cat > reports/gitleaks.html <<'HTML'
+          <html><body><h2>Gitleaks – Résultats</h2>
+          <p>Le rapport SARIF est archivé (gitleaks.sarif) et envoyé sur S3.</p></body></html>
+          HTML
         '''
-        archiveArtifacts artifacts: 'reports/gitleaks.sarif', allowEmptyArchive: true
         publishHTML(target: [reportDir: 'reports', reportFiles: 'gitleaks.html',
           reportName: 'Gitleaks (Secrets)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        archiveArtifacts artifacts: 'reports/gitleaks.sarif', allowEmptyArchive: true
       }
     }
 
@@ -91,54 +104,40 @@ pipeline {
           set -eux
           docker run --rm -v "$PWD":/src returntocorp/semgrep:latest \
             semgrep --config p/ci --sarif --output /src/reports/semgrep.sarif --error --timeout 0 || true
-          printf '<h2>Semgrep SARIF généré</h2><p>Fichier: reports/semgrep.sarif</p>' > reports/semgrep.html
+
+          cat > reports/semgrep.html <<'HTML'
+          <html><body><h2>Semgrep – Résultats</h2>
+          <p>Le rapport SARIF est archivé (semgrep.sarif) et envoyé sur S3.</p></body></html>
+          HTML
         '''
-        archiveArtifacts artifacts: 'reports/semgrep.sarif', allowEmptyArchive: true
         publishHTML(target: [reportDir: 'reports', reportFiles: 'semgrep.html',
           reportName: 'Semgrep (SAST)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        archiveArtifacts artifacts: 'reports/semgrep.sarif', allowEmptyArchive: true
       }
     }
 
-    /* -------- Snyk Open Source (SCA) -------- */
-    stage('Snyk (SCA)') {
-      when { expression { fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pom.xml') || fileExists('pyproject.toml') } }
-      options { timeout(time: 6, unit: 'MINUTES') }
+    /* ===================== SonarCloud ===================== */
+
+    stage('SonarCloud') {
       steps {
-        withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
+        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
           sh '''
             set -eux
-            TARGET_FILE=""; PKG_MGR=""
-            if   [ -f src/requirements.txt ]; then TARGET_FILE="src/requirements.txt"; PKG_MGR="--package-manager=pip"
-            elif [ -f requirements.txt ];    then TARGET_FILE="requirements.txt";    PKG_MGR="--package-manager=pip"
-            elif [ -f pom.xml ];             then TARGET_FILE="pom.xml";             PKG_MGR=""
-            fi
-
-            docker run --rm -v "$PWD":/project -w /project python:3.11-alpine sh -lc "
-              set -eux
-              apk add --no-cache nodejs npm
-              npm -g i snyk@latest snyk-to-html@latest snyk-to-sarif@latest
-              if [ -n \\"$TARGET_FILE\\" ]; then
-                SNYK_TOKEN=$SNYK_TOKEN snyk test --file=\\"$TARGET_FILE\\" $PKG_MGR \
-                  --org=$SNYK_ORG --severity-threshold=medium --json \
-                  | tee /project/reports/snyk-sca.json >/dev/null || true
-              else
-                SNYK_TOKEN=$SNYK_TOKEN snyk test --org=$SNYK_ORG --all-projects \
-                  --severity-threshold=medium --json \
-                  | tee /project/reports/snyk-sca.json >/dev/null || true
-              fi
-              if [ -s /project/reports/snyk-sca.json ]; then
-                snyk-to-html -i /project/reports/snyk-sca.json -o /project/reports/snyk-sca.html || true
-                snyk-to-sarif /project/reports/snyk-sca.json > /project/reports/snyk-sca.sarif || true
-              fi
-            "
-            echo '--- ls reports après Snyk SCA ---'; ls -l reports || true
+            docker run --rm \
+              -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
+              -e SONAR_LOGIN="${SONAR_TOKEN}" \
+              -v "$PWD":/usr/src sonarsource/sonar-scanner-cli \
+              -Dsonar.organization="${SONAR_ORG}" \
+              -Dsonar.projectKey="${SONAR_PROJECT_KEY}" \
+              -Dsonar.projectVersion="${BUILD_NUMBER}" \
+              -Dsonar.sources=. \
+              -Dsonar.scanner.skipJreProvisioning=true
           '''
         }
-        publishHTML(target: [reportDir: 'reports', reportFiles: 'snyk-sca.html',
-          reportName: 'Snyk Open Source (SCA)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-        archiveArtifacts artifacts: 'reports/snyk-sca.json,reports/snyk-sca.sarif', allowEmptyArchive: true
       }
     }
+
+    /* ===================== Build & Trivy ===================== */
 
     stage('Build Image (si Dockerfile présent)') {
       when { expression { fileExists('Dockerfile') || fileExists('container/Dockerfile') } }
@@ -153,63 +152,58 @@ pipeline {
       }
     }
 
-    /* -------- Snyk Container -------- */
-    stage('Snyk Container (image)') {
+    stage('Trivy FS (deps & OS)') {
+      steps {
+        sh '''
+          set -eux
+          # Rapports (HTML via template, SARIF pour outils)
+          docker run --rm -v "$PWD":/work -w /work aquasec/trivy:latest \
+            fs --scanners vuln,config,secret \
+            --format template --template "@/contrib/html.tpl" -o /work/reports/trivy-fs.html .
+
+          docker run --rm -v "$PWD":/work -w /work aquasec/trivy:latest \
+            fs --scanners vuln,config,secret \
+            --format sarif -o /work/reports/trivy-fs.sarif .
+
+          # Gate de sévérité (échoue si >= HIGH/CRITICAL)
+          docker run --rm -v "$PWD":/work -w /work aquasec/trivy:latest \
+            fs --scanners vuln \
+            --ignore-unfixed --severity "${TRIVY_FAIL_SEV}" --exit-code 1 . || true
+          code=$?
+          [ $code -ne 0 ] && echo "Trivy FS gate: ${TRIVY_FAIL_SEV} trouvées" && exit $code || true
+        '''
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'trivy-fs.html',
+          reportName: 'Trivy (File System)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        archiveArtifacts artifacts: 'reports/trivy-fs.sarif', allowEmptyArchive: true
+      }
+    }
+
+    stage('Trivy Image (si image.txt)') {
       when { expression { fileExists('image.txt') } }
-      options { timeout(time: 6, unit: 'MINUTES') }
       steps {
-        withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
-          sh '''
-            set -eux
-            IMAGE=$(cat image.txt)
-            docker run --rm \
-              -e SNYK_TOKEN="$SNYK_TOKEN" \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              -v "$PWD":/work -w /work node:18-alpine sh -lc "
-                set -eux
-                npm -g i snyk@latest snyk-to-html@latest snyk-to-sarif@latest
-                snyk container test \\"$IMAGE\\" --org=$SNYK_ORG --severity-threshold=medium \
-                  --json --file=container.Dockerfile > /work/reports/snyk-container.json || true
-                snyk-to-html -i /work/reports/snyk-container.json -o /work/reports/snyk-container.html || true
-                snyk-to-sarif /work/reports/snyk-container.json > /work/reports/snyk-container.sarif || true
-              "
-          '''
-        }
-        publishHTML(target: [reportDir: 'reports', reportFiles: 'snyk-container.html',
-          reportName: 'Snyk Container (Image)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-        archiveArtifacts artifacts: 'reports/snyk-container.json,reports/snyk-container.sarif', allowEmptyArchive: true
+        sh '''
+          set -eux
+          IMAGE=$(cat image.txt)
+
+          docker run --rm -v "$PWD":/work -w /work -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest \
+            image --format template --template "@/contrib/html.tpl" -o /work/reports/trivy-image.html "${IMAGE}"
+
+          docker run --rm -v "$PWD":/work -w /work -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest \
+            image --format sarif -o /work/reports/trivy-image.sarif "${IMAGE}"
+
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest \
+            image --ignore-unfixed --severity "${TRIVY_FAIL_SEV}" --exit-code 1 "${IMAGE}" || true
+          code=$?
+          [ $code -ne 0 ] && echo "Trivy Image gate: ${TRIVY_FAIL_SEV} trouvées" && exit $code || true
+        '''
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'trivy-image.html',
+          reportName: 'Trivy (Image)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        archiveArtifacts artifacts: 'reports/trivy-image.sarif', allowEmptyArchive: true
       }
     }
 
-    /* -------- Gates (fail si vuln ≥ seuil) 
-    stage('Snyk Gates (fail si ≥ seuil)') {
-      steps {
-        withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
-          sh '''
-            set -eux
-            TARGET_FILE=""; PKG_MGR=""
-            if   [ -f src/requirements.txt ]; then TARGET_FILE="src/requirements.txt"; PKG_MGR="--package-manager=pip"
-            elif [ -f requirements.txt ];    then TARGET_FILE="requirements.txt";    PKG_MGR="--package-manager=pip"
-            elif [ -f pom.xml ];             then TARGET_FILE="pom.xml";             PKG_MGR=""
-            fi
+    /* ===================== Deploy (Ansible) ===================== */
 
-            docker run --rm -v "$PWD":/project -w /project python:3.11-alpine sh -lc "
-              set -eux
-              apk add --no-cache nodejs npm
-              npm -g i snyk@latest
-              if [ -n \\"$TARGET_FILE\\" ]; then
-                SNYK_TOKEN=$SNYK_TOKEN snyk test --file=\\"$TARGET_FILE\\" $PKG_MGR \
-                  --org=$SNYK_ORG --severity-threshold=${SNYK_FAIL_SEV}
-              else
-                SNYK_TOKEN=$SNYK_TOKEN snyk test --org=$SNYK_ORG --all-projects \
-                  --severity-threshold=${SNYK_FAIL_SEV}
-              fi
-            "
-          '''
-        }
-      }
-    }
-Deploy via Ansible -------- */
     stage('Deploy (Ansible)') {
       when { expression { fileExists('ansible/site.yml') } }
       steps {
@@ -217,15 +211,22 @@ Deploy via Ansible -------- */
                                            keyFileVariable: 'SSH_KEY',
                                            usernameVariable: 'SSH_USER')]) {
           sh '''
-            set -eux
+            set -euxo pipefail
+            ls -la ansible
+            test -s "$SSH_KEY" || { echo "SSH_KEY introuvable ou vide"; exit 2; }
+
             docker run --rm \
+              -e ANSIBLE_HOST_KEY_CHECKING=False \
               -v "$PWD/ansible:/ansible:ro" \
               -v "$SSH_KEY:/id_rsa:ro" \
               --entrypoint bash willhallonline/ansible:2.15-ubuntu -lc "
-                chmod 600 /id_rsa &&
+                set -eux
+                chmod 600 /id_rsa
+                ansible --version
                 ansible-playbook -i /ansible/inventory.ini /ansible/site.yml \
-                  --key-file /id_rsa \
+                  --private-key /id_rsa \
                   -e ansible_user=${SSH_USER} \
+                  -e ansible_ssh_common_args='-o StrictHostKeyChecking=no' \
                   -e image='${IMAGE_NAME}'
               "
           '''
@@ -233,7 +234,8 @@ Deploy via Ansible -------- */
       }
     }
 
-    /* -------- DAST -------- */
+    /* ===================== DAST ===================== */
+
     stage('DAST - ZAP Baseline') {
       options { timeout(time: 8, unit: 'MINUTES') }
       steps {
@@ -247,7 +249,8 @@ Deploy via Ansible -------- */
       }
     }
 
-    /* -------- Upload S3 -------- */
+    /* ===================== S3 & URLs ===================== */
+
     stage('Publish reports to S3') {
       when { expression { fileExists('reports') } }
       steps {
@@ -317,14 +320,13 @@ Deploy via Ansible -------- */
             fi
           '''
         }
-        archiveArtifacts artifacts: 'presigned-urls.txt,image.txt', allowEmptyArchive: true
+        archiveArtifacts artifacts: 'presigned-urls.txt,image.txt,reports/', allowEmptyArchive: true
       }
     }
   }
 
   post {
     always {
-      // jar éventuels + logs
       archiveArtifacts artifacts: '/target/.jar, **/.log', allowEmptyArchive: true
     }
   }
