@@ -8,10 +8,12 @@ pipeline {
   }
 
   environment {
-    SNYK_ORG   = '98-an'
-    IMAGE_NAME = "demoapp:${env.BUILD_NUMBER}"
-    S3_BUCKET  = 'cryptonext-reports-98an'
-    AWS_REGION = 'eu-north-1'
+    SNYK_ORG    = '98-an'
+    IMAGE_NAME  = "demoapp:${env.BUILD_NUMBER}"
+    S3_BUCKET   = 'cryptonext-reports-98an'
+    AWS_REGION  = 'eu-north-1'
+    // adapte cette URL si besoin (IP publique de ton app)
+    DAST_TARGET = 'http://13.62.105.249:5000'
   }
 
   stages {
@@ -35,25 +37,23 @@ pipeline {
     }
 
     stage('Python Lint & Tests & Bandit') {
-      when {
-        expression { fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pyproject.toml') }
-      }
+      when { expression { fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pyproject.toml') } }
       steps {
         sh '''
           set -eux
           mkdir -p reports
-          if   [ -f src/requirements.txt ]; then REQ=src/requirements.txt
-          elif [ -f requirements.txt ];    then REQ=requirements.txt
-          else REQ=""; fi
-
-          docker run --rm -v "$PWD":/ws -w /ws python:3.8-slim bash -lc "
-            python -m pip install --upgrade pip &&
-            if [ -n \\"$REQ\\" ]; then pip install --prefer-binary -r \\"$REQ\\"; fi &&
-            pip install pytest flake8 bandit &&
-            flake8 || true &&
-            pytest --maxfail=1 --junitxml=pytest-report.xml || true &&
-            bandit -r . -f html -o reports/bandit-report.html || true
-          "
+          # On fait toute la détection DES FICHIERS depuis l'intérieur du conteneur
+          docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim bash -lc '
+            set -eux
+            python -m pip install --upgrade pip
+            if   [ -f src/requirements.txt ]; then pip install --prefer-binary -r src/requirements.txt
+            elif [ -f requirements.txt ];    then pip install --prefer-binary -r requirements.txt
+            fi
+            pip install pytest flake8 bandit
+            flake8 || true
+            pytest --maxfail=1 --junitxml=/ws/pytest-report.xml || true
+            bandit -r . -f html -o /ws/reports/bandit-report.html || true
+          '
         '''
         junit allowEmptyResults: true, testResults: 'pytest-report.xml'
         publishHTML(target: [reportDir: 'reports', reportFiles: 'bandit-report.html',
@@ -73,26 +73,26 @@ pipeline {
     }
 
     stage('Snyk (SCA)') {
-      options { timeout(time: 6, unit: 'MINUTES') }
       when { expression { fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pom.xml') || fileExists('pyproject.toml') } }
+      options { timeout(time: 6, unit: 'MINUTES') }
       steps {
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
           sh '''
             set -eux
             mkdir -p reports
-            docker run --rm \
-              -e SNYK_TOKEN="$SNYK_TOKEN" \
-              -v "$PWD":/project -w /project \
-              snyk/snyk-cli:stable snyk test \
-                --org="$SNYK_ORG" --all-projects \
-                --severity-threshold=medium \
-                --json-file-output=reports/snyk-sca.json || true
 
-            docker run --rm \
-              -e SNYK_TOKEN="$SNYK_TOKEN" \
-              -v "$PWD":/project -w /project \
-              snyk/snyk-cli:stable snyk monitor \
-                --org="$SNYK_ORG" --all-projects || true
+            # On tente l'image CLI officielle; si indisponible on bascule sur Node+npm (fallback)
+            docker pull snyk/snyk-cli:stable || true
+            if docker image inspect snyk/snyk-cli:stable >/dev/null 2>&1; then
+              docker run --rm -e SNYK_TOKEN="$SNYK_TOKEN" -v "$PWD":/project -w /project \
+                snyk/snyk-cli:stable snyk test --org="$SNYK_ORG" --all-projects \
+                --severity-threshold=medium --json-file-output=reports/snyk-sca.json || true
+            else
+              docker run --rm -v "$PWD":/project -w /project node:18-alpine sh -lc "
+                npm -g i snyk snyk-to-html && SNYK_TOKEN=$SNYK_TOKEN snyk test \
+                --org=$SNYK_ORG --all-projects --severity-threshold=medium \
+                --json-file-output=reports/snyk-sca.json || true"
+            fi
 
             docker run --rm -v "$PWD":/work \
               snyk/snyk-to-html -i /work/reports/snyk-sca.json -o /work/reports/snyk-sca.html || true
@@ -127,20 +127,19 @@ pipeline {
             mkdir -p reports
             IMAGE=$(cat image.txt)
 
+            docker pull snyk/snyk-cli:stable || true
             docker run --rm \
               -e SNYK_TOKEN="$SNYK_TOKEN" \
               -v /var/run/docker.sock:/var/run/docker.sock \
               -v "$PWD":/project -w /project \
               snyk/snyk-cli:stable snyk container test "$IMAGE" \
-                --org="$SNYK_ORG" \
-                --severity-threshold=medium \
+                --org="$SNYK_ORG" --severity-threshold=medium \
                 --json-file-output=reports/snyk-container.json || true
 
             docker run --rm \
               -e SNYK_TOKEN="$SNYK_TOKEN" \
               -v /var/run/docker.sock:/var/run/docker.sock \
-              snyk/snyk-cli:stable snyk container monitor "$IMAGE" \
-                --org="$SNYK_ORG" || true
+              snyk/snyk-cli:stable snyk container monitor "$IMAGE" --org="$SNYK_ORG" || true
 
             docker run --rm -v "$PWD":/work \
               snyk/snyk-to-html -i /work/reports/snyk-container.json -o /work/reports/snyk-container.html || true
@@ -151,65 +150,42 @@ pipeline {
       }
     }
 
-    /* -------------------- DAST -------------------- */
     stage('DAST - ZAP Baseline') {
-      when { expression { fileExists('image.txt') } }
-      options { timeout(time: 10, unit: 'MINUTES') }
+      options { timeout(time: 8, unit: 'MINUTES') }
       steps {
         sh '''
           set -eux
           mkdir -p reports
-          IMAGE=$(cat image.txt)
-
-          # 1) Démarre l'app en local pour le scan
-          docker rm -f demoapp-dast || true
-          docker run -d --name demoapp-dast -p 5000:5000 "$IMAGE"
-
-          # 2) Attendre que l'app réponde
-          for i in $(seq 1 30); do
-            if curl -fsS http://localhost:5000/ >/dev/null 2>&1; then break; fi
-            sleep 2
-          done
-
-          # 3) Lancer ZAP baseline (réseau host pour accéder à localhost:5000)
-          docker run --rm --network host -u 0 \
-            -v "$PWD/reports:/zap/wrk" \
-            owasp/zap2docker-stable zap-baseline.py \
-              -t "http://localhost:5000" \
-              -r /zap/wrk/zap-baseline.html || true
-
-          # 4) Arrêt / nettoyage
-          docker rm -f demoapp-dast || true
+          docker run --rm -v "$PWD/reports:/zap/wrk" owasp/zap2docker-stable \
+            zap-baseline.py -t "$DAST_TARGET" -r zap-baseline.html || true
         '''
         publishHTML(target: [reportDir: 'reports', reportFiles: 'zap-baseline.html',
-          reportName: 'OWASP ZAP (Baseline)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+          reportName: 'ZAP Baseline', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
     }
 
-    /* --------- Publication S3 + pré-signés -------- */
     stage('Publish reports to S3') {
       when { expression { fileExists('reports') } }
       steps {
-        withCredentials([usernamePassword(credentialsId: 'aws-up',
-          usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+        withCredentials([usernamePassword(credentialsId: 'aws-up', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
           sh '''
             set -eux
+            if [ -z "$(ls -A reports || true)" ]; then
+              echo "Aucun rapport à publier, on saute."
+              exit 0
+            fi
             DEST="s3://${S3_BUCKET}/${JOB_NAME}/${BUILD_NUMBER}/"
             docker run --rm \
               -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
               -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
               -e AWS_DEFAULT_REGION="${AWS_REGION}" \
               -v "$PWD/reports:/reports" amazon/aws-cli \
-              s3 cp /reports "${DEST}" --recursive --sse AES256 || true
-
-            if [ -f image.txt ]; then
-              docker run --rm \
-                -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-                -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
-                -e AWS_DEFAULT_REGION="${AWS_REGION}" \
-                -v "$PWD:/w" amazon/aws-cli \
-                s3 cp /w/image.txt "${DEST}" || true
-            fi
+              s3 cp /reports "${DEST}" --recursive --sse AES256
+            [ -f image.txt ] && docker run --rm \
+              -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+              -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+              -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+              -v "$PWD:/w" amazon/aws-cli s3 cp /w/image.txt "${DEST}" || true
           '''
         }
       }
@@ -217,8 +193,7 @@ pipeline {
 
     stage('List uploaded S3 files') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'aws-up',
-          usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+        withCredentials([usernamePassword(credentialsId: 'aws-up', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
           sh '''
             set -eux
             DEST="s3://${S3_BUCKET}/${JOB_NAME}/${BUILD_NUMBER}/"
@@ -234,28 +209,28 @@ pipeline {
 
     stage('Make presigned URLs (1h)') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'aws-up',
-          usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+        withCredentials([usernamePassword(credentialsId: 'aws-up', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
           sh '''
             set -eux
-            PREFIX="${JOB_NAME}/${BUILD_NUMBER}"
             : > presigned-urls.txt
-            for f in reports/*; do
-              key="${PREFIX}/$(basename "$f")"
-              url=$(docker run --rm \
-                -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-                -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
-                -e AWS_DEFAULT_REGION="${AWS_REGION}" \
-                amazon/aws-cli \
-                s3 presign "s3://${S3_BUCKET}/${key}" --expires-in 3600)
-              echo "${key} -> ${url}" | tee -a presigned-urls.txt
-            done
+            if [ -d reports ] && [ -n "$(ls -A reports || true)" ]; then
+              PREFIX="${JOB_NAME}/${BUILD_NUMBER}"
+              for f in reports/*; do
+                key="${PREFIX}/$(basename "$f")"
+                url=$(docker run --rm \
+                  -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+                  -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+                  -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+                  amazon/aws-cli s3 presign "s3://${S3_BUCKET}/${key}" --expires-in 3600)
+                echo "${key} -> ${url}" | tee -a presigned-urls.txt
+              done
+            fi
           '''
         }
-        archiveArtifacts artifacts: 'presigned-urls.txt', allowEmptyArchive: true
+        archiveArtifacts artifacts: 'presigned-urls.txt,image.txt', allowEmptyArchive: true
       }
     }
-  } // fin stages
+  }
 
   post {
     always {
