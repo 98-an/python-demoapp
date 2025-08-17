@@ -10,21 +10,14 @@ pipeline {
 
   environment {
     IMAGE_NAME   = "demoapp:${env.BUILD_NUMBER}"
+    S3_BUCKET    = 'cryptonext-reports-98an'
+    AWS_REGION   = 'eu-north-1'
+    DAST_TARGET  = 'http://13.62.105.249:5000'
 
-    // ---- SonarCloud (désactiver "Automatic Analysis" côté SonarCloud)
-    SONAR_HOST_URL    = 'https://sonarcloud.io'
-    SONAR_ORG         = '98-an'                    // <- ta clé d’org
-    SONAR_PROJECT_KEY = '98-an_python-demoapp'     // <- clé exacte du projet
-
-    // ---- Trivy
-    TRIVY_VER   = '0.50.2'
-
-    // ---- DAST
-    DAST_TARGET = 'http://13.62.105.249:5000'      // adapte si besoin
-
-    // ---- S3
-    S3_BUCKET   = 'cryptonext-reports-98an'
-    AWS_REGION  = 'eu-north-1'
+    // SonarCloud
+    SONAR_HOST_URL   = 'https://sonarcloud.io'
+    SONAR_ORG        = '98-an'
+    SONAR_PROJECT_KEY= '98-an_python-demoapp'
   }
 
   stages {
@@ -33,7 +26,7 @@ pipeline {
       steps {
         checkout scm
         script { env.SHORT_SHA = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim() }
-        sh 'rm -rf reports && mkdir -p reports && echo "commit=${GIT_COMMIT}" > reports/build-info.txt || true'
+        sh 'rm -rf reports && mkdir -p reports'
       }
     }
 
@@ -59,10 +52,14 @@ pipeline {
             if   [ -f src/requirements.txt ]; then pip install --prefer-binary -r src/requirements.txt
             elif [ -f requirements.txt ];    then pip install --prefer-binary -r requirements.txt
             fi
-            pip install pytest flake8 bandit
+            pip install pytest flake8 bandit pytest-cov
+
             flake8 || true
-            pytest --maxfail=1 --junitxml=/ws/pytest-report.xml || true
-            bandit -r . -f html -o /ws/reports/bandit-report.html || true
+            # tests + coverage (fichier pour SonarCloud)
+            pytest --maxfail=1 --cov=. --cov-report=xml:coverage.xml --junitxml=pytest-report.xml || true
+
+            # rapport HTML Bandit
+            bandit -r . -f html -o reports/bandit-report.html || true
           '
         '''
         junit allowEmptyResults: true, testResults: 'pytest-report.xml'
@@ -77,15 +74,8 @@ pipeline {
         sh '''
           set -eux
           DF="Dockerfile"; [ -f "$DF" ] || DF="container/Dockerfile"
-          docker run --rm -i hadolint/hadolint < "$DF" | tee reports/hadolint.txt || true
-          {
-            echo '<html><body><h2>Hadolint</h2><pre>';
-            sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' reports/hadolint.txt || true;
-            echo '</pre></body></html>';
-          } > reports/hadolint.html
+          docker run --rm -i hadolint/hadolint < "$DF" || true
         '''
-        publishHTML(target: [reportDir: 'reports', reportFiles: 'hadolint.html',
-          reportName: 'Hadolint (Dockerfile)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
     }
 
@@ -93,17 +83,20 @@ pipeline {
       steps {
         sh '''
           set -eux
+          # SARIF
           docker run --rm -v "$PWD":/repo zricethezav/gitleaks:latest \
-            detect --no-git -s /repo -f sarif -r /repo/reports/gitleaks.sarif || true
+            detect -s /repo -f sarif -r /repo/reports/gitleaks.sarif || true
+
+          # Résumé HTML simple
           {
-            echo '<html><body><h2>Gitleaks SARIF</h2><pre>';
-            sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' reports/gitleaks.sarif || true;
-            echo '</pre></body></html>';
+            echo '<html><body><h2>Gitleaks (résumé)</h2><pre>'
+            grep -o '"ruleId":' reports/gitleaks.sarif | wc -l | xargs echo "Findings:" || true
+            echo '</pre></body></html>'
           } > reports/gitleaks.html
         '''
+        archiveArtifacts artifacts: 'reports/gitleaks.sarif', allowEmptyArchive: true
         publishHTML(target: [reportDir: 'reports', reportFiles: 'gitleaks.html',
           reportName: 'Gitleaks (Secrets)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-        archiveArtifacts artifacts: 'reports/gitleaks.sarif', allowEmptyArchive: true
       }
     }
 
@@ -112,16 +105,17 @@ pipeline {
         sh '''
           set -eux
           docker run --rm -v "$PWD":/src returntocorp/semgrep:latest \
-            semgrep --config p/ci --sarif --output /src/reports/semgrep.sarif --timeout 0 || true
+            semgrep --config p/ci --sarif --output /src/reports/semgrep.sarif --error --timeout 0 || true
+
           {
-            echo '<html><body><h2>Semgrep SARIF</h2><pre>';
-            sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' reports/semgrep.sarif || true;
-            echo '</pre></body></html>';
+            echo '<html><body><h2>Semgrep (résumé)</h2><pre>'
+            grep -o '"ruleId":' reports/semgrep.sarif | wc -l | xargs echo "Findings:" || true
+            echo '</pre></body></html>'
           } > reports/semgrep.html
         '''
+        archiveArtifacts artifacts: 'reports/semgrep.sarif', allowEmptyArchive: true
         publishHTML(target: [reportDir: 'reports', reportFiles: 'semgrep.html',
           reportName: 'Semgrep (SAST)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-        archiveArtifacts artifacts: 'reports/semgrep.sarif', allowEmptyArchive: true
       }
     }
 
@@ -131,19 +125,18 @@ pipeline {
           sh '''
             set -eux
             docker run --rm \
-              -e SONAR_HOST_URL="${SONAR_HOST_URL}" \
-              -e SONAR_LOGIN="${SONAR_TOKEN}" \
+              -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+              -e SONAR_TOKEN="$SONAR_TOKEN" \
               -v "$PWD":/usr/src \
               sonarsource/sonar-scanner-cli:latest \
-                -Dsonar.organization="${SONAR_ORG}" \
-                -Dsonar.projectKey="${SONAR_PROJECT_KEY}" \
-                -Dsonar.projectName="${SONAR_PROJECT_KEY}" \
-                -Dsonar.projectVersion="${BUILD_NUMBER}" \
-                -Dsonar.sources=. \
-                -Dsonar.inclusions=/.py,/.js,/*.ts \
-                -Dsonar.exclusions=/venv/,/.venv/,/node_modules/,/tests/** \
+                -Dsonar.organization="$SONAR_ORG" \
+                -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+                -Dsonar.projectName="$SONAR_PROJECT_KEY" \
+                -Dsonar.sources="." \
+                -Dsonar.scm.provider=git \
                 -Dsonar.python.version=3.11 \
-                -Dsonar.scanner.skipJreProvisioning=true
+                -Dsonar.python.coverage.reportPaths=coverage.xml \
+                -Dsonar.scanner.skipJreProvisioning=true || true
           '''
         }
       }
@@ -166,19 +159,19 @@ pipeline {
       steps {
         sh '''
           set -eux
-          docker run --rm -v "$PWD":/src -v "$PWD/reports":/reports aquasec/trivy:${TRIVY_VER} \
-            fs --no-progress --scanners vuln,secret,config --format sarif -o /reports/trivy-fs.sarif /src || true
-          docker run --rm -v "$PWD":/src -v "$PWD/reports":/reports aquasec/trivy:${TRIVY_VER} \
-            fs --no-progress --severity HIGH,CRITICAL --format table -o /reports/trivy-fs.txt /src || true
-          {
-            echo '<html><body><h2>Trivy FS</h2><pre>';
-            sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' reports/trivy-fs.txt || true;
-            echo '</pre></body></html>';
-          } > reports/trivy-fs.html
+          # SARIF
+          docker run --rm -v "$PWD":/project aquasec/trivy:latest \
+            fs --scanners vuln,secret,config --format sarif -o /project/reports/trivy-fs.sarif /project || true
+
+          # Table -> HTML
+          docker run --rm -v "$PWD":/project aquasec/trivy:latest \
+            fs --scanners vuln,secret,config -f table /project > reports/trivy-fs.txt || true
+          { echo '<html><body><h2>Trivy FS</h2><pre>'; cat reports/trivy-fs.txt; echo '</pre></body></html>'; } \
+            > reports/trivy-fs.html
         '''
-        publishHTML(target: [reportDir: 'reports', reportFiles: 'trivy-fs.html',
-          reportName: 'Trivy FS (workspace)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
         archiveArtifacts artifacts: 'reports/trivy-fs.sarif, reports/trivy-fs.txt', allowEmptyArchive: true
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'trivy-fs.html',
+          reportName: 'Trivy FS', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
     }
 
@@ -187,20 +180,23 @@ pipeline {
       steps {
         sh '''
           set -eux
-          IMAGE=$(cat image.txt)
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/reports":/reports aquasec/trivy:${TRIVY_VER} \
-            image --no-progress --format sarif -o /reports/trivy-image.sarif "$IMAGE" || true
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/reports":/reports aquasec/trivy:${TRIVY_VER} \
-            image --no-progress --severity HIGH,CRITICAL --format table -o /reports/trivy-image.txt "$IMAGE" || true
-          {
-            echo '<html><body><h2>Trivy Image</h2><pre>';
-            sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' reports/trivy-image.txt || true;
-            echo '</pre></body></html>';
-          } > reports/trivy-image.html
+          IMG=$(cat image.txt)
+
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/project aquasec/trivy:latest \
+            image --format sarif -o /project/reports/trivy-image.sarif "$IMG" || true
+
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image -f table "$IMG" > reports/trivy-image.txt || true
+
+          { echo '<html><body><h2>Trivy Image</h2><pre>'; cat reports/trivy-image.txt; echo '</pre></body></html>'; } \
+            > reports/trivy-image.html
         '''
+        archiveArtifacts artifacts: 'reports/trivy-image.sarif, reports/trivy-image.txt', allowEmptyArchive: true
         publishHTML(target: [reportDir: 'reports', reportFiles: 'trivy-image.html',
           reportName: 'Trivy Image', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-        archiveArtifacts artifacts: 'reports/trivy-image.sarif, reports/trivy-image.txt', allowEmptyArchive: true
       }
     }
 
@@ -289,11 +285,12 @@ pipeline {
         archiveArtifacts artifacts: 'presigned-urls.txt,image.txt', allowEmptyArchive: true
       }
     }
-  }
+  } // stages
 
   post {
     always {
-      archiveArtifacts artifacts: 'reports/, image.txt, presigned-urls.txt, */target/.jar, */.log', allowEmptyArchive: true
+      // Publier tous les rapports générés + logs/jars éventuels
+      archiveArtifacts artifacts: 'reports/, */target/.jar, */.log', allowEmptyArchive: true
     }
   }
 }
