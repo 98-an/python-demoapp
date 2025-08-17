@@ -1,19 +1,31 @@
 pipeline {
   agent any
 
+  parameters {
+    string(
+      name: 'DAST_TARGET',
+      defaultValue: '',
+      description: 'URL cible pour ZAP. Laisse vide pour scanner le conteneur déployé localement (http://demoapp-ansible:5000 via réseau Docker).'
+    )
+  }
+
   options {
-    skipDefaultCheckout(true)
     timestamps()
     disableConcurrentBuilds()
+    ansiColor('xterm')
     timeout(time: 30, unit: 'MINUTES')
+    skipDefaultCheckout(false)
   }
 
   environment {
-    SNYK_ORG   = '98-an'                          // ton org Snyk (slug)
-    IMAGE_NAME = "demoapp:${env.BUILD_NUMBER}"    // tag local pour scans
-    S3_BUCKET  = 'cryptonext-reports-98an'        // ton bucket
-    AWS_REGION = 'eu-north-1'                     // Stockholm
-    TARGET_URL = 'http://13.62.105.249:5000'      // URL publique de l’app pour le DAST
+    // --- Vars globales ---
+    SNYK_ORG      = '98-an'
+    SNYK_FAIL_SEV = 'high'                 // échoue si vuln >= ce seuil
+    IMAGE_NAME    = "demoapp:${env.BUILD_NUMBER}"
+    PY_IMAGE      = 'python:3.8-slim'      // 3.8 pour éviter les wheels manquants (psutil==5.8.0)
+    S3_BUCKET     = 'cryptonext-reports-98an'
+    AWS_REGION    = 'eu-north-1'
+    DAST_TARGET = 'http://13.62.105.249:5000'
   }
 
   stages {
@@ -37,31 +49,41 @@ pipeline {
     }
 
     stage('Python Lint & Tests & Bandit') {
-      when {
-        expression {
-          return fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pyproject.toml')
-        }
+      when { expression { fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pyproject.toml') } }
+      steps {
+        sh """
+          docker run --rm -v "$PWD":/ws -w /ws ${PY_IMAGE} bash -lc '
+            set -eux
+            mkdir -p reports
+            REQ=""
+            if [ -f src/requirements.txt ]; then REQ=src/requirements.txt; elif [ -f requirements.txt ]; then REQ=requirements.txt; fi
+            python -m pip install --upgrade pip
+            if [ -n "$REQ" ]; then pip install --prefer-binary -r "$REQ"; fi
+            pip install pytest flake8 bandit
+            flake8 || true
+            pytest --maxfail=1 --junitxml=pytest-report.xml || true
+            bandit -q -r . -f html -o reports/bandit-report.html || true
+          '
+        """
+        junit allowEmptyResults: true, testResults: 'pytest-report.xml'
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'bandit-report.html',
+          reportName: 'Bandit - Python SAST', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
+    }
+
+    stage('SAST - Semgrep & Secrets') {
       steps {
         sh '''
           set -eux
           mkdir -p reports
-          if   [ -f src/requirements.txt ]; then REQ=src/requirements.txt
-          elif [ -f requirements.txt ];    then REQ=requirements.txt
-          else REQ=""; fi
+          CFG="p/ci"; [ -f security/semgrep-rules.yml ] && CFG="security/semgrep-rules.yml"
+          docker run --rm -v "$PWD":/work -w /work semgrep/semgrep:latest \
+            semgrep ci --config "$CFG" --sarif --output reports/semgrep.sarif || true
 
-          docker run --rm -v "$PWD":/ws -w /ws python:3.8-slim bash -lc "
-            python -m pip install --upgrade pip &&
-            if [ -n \\"$REQ\\" ]; then pip install --prefer-binary -r \\"$REQ\\"; fi &&
-            pip install pytest flake8 bandit &&
-            flake8 || true &&
-            pytest --maxfail=1 --junitxml=pytest-report.xml || true &&
-            bandit -r . -f html -o reports/bandit-report.html || true
-          "
+          docker run --rm -v "$PWD":/repo -w /repo gitleaks/gitleaks:latest detect \
+            -s /repo -f sarif -r /repo/reports/gitleaks.sarif --no-git || true
         '''
-        junit allowEmptyResults: true, testResults: 'pytest-report.xml'
-        publishHTML(target: [reportDir: 'reports', reportFiles: 'bandit-report.html',
-          reportName: 'Bandit - Python SAST', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        archiveArtifacts artifacts: 'reports/*.sarif', fingerprint: true, allowEmptyArchive: true
       }
     }
 
@@ -76,107 +98,172 @@ pipeline {
       }
     }
 
-    stage('Snyk (SCA)') {
-      when {
-        expression {
-          return fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pom.xml') || fileExists('pyproject.toml')
-        }
-      }
-      options { timeout(time: 6, unit: 'MINUTES') }
-      steps {
-        withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
-          sh '''
-            set -eux
-            mkdir -p reports
-
-            # Analyse dépendances (image CLI "linux")
-            docker run --rm \
-              -e SNYK_TOKEN="$SNYK_TOKEN" \
-              -v "$PWD":/project -w /project \
-              snyk/snyk-cli:linux snyk test \
-                --org="$SNYK_ORG" --all-projects \
-                --severity-threshold=medium \
-                --json-file-output=reports/snyk-sca.json || true
-
-            docker run --rm \
-              -e SNYK_TOKEN="$SNYK_TOKEN" \
-              -v "$PWD":/project -w /project \
-              snyk/snyk-cli:linux snyk monitor \
-                --org="$SNYK_ORG" --all-projects || true
-
-            docker run --rm -v "$PWD":/work \
-              snyk/snyk-to-html -i /work/reports/snyk-sca.json -o /work/reports/snyk-sca.html || true
-          '''
-        }
-        publishHTML(target: [reportDir: 'reports', reportFiles: 'snyk-sca.html',
-          reportName: 'Snyk Open Source (SCA)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-        archiveArtifacts artifacts: 'reports/', fingerprint: true, allowEmptyArchive: true
-      }
-    }
-
-    stage('Build Image (si Dockerfile présent)') {
+    stage('Build Image') {
       when { expression { fileExists('Dockerfile') || fileExists('container/Dockerfile') } }
       steps {
         sh '''
           set -eux
           DF="Dockerfile"; [ -f "$DF" ] || DF="container/Dockerfile"
-          docker build -f "$DF" -t "$IMAGE_NAME" .
+          docker build -t "$IMAGE_NAME" -f "$DF" .
           echo "$IMAGE_NAME" > image.txt
         '''
         archiveArtifacts artifacts: 'image.txt', fingerprint: true
       }
     }
 
-    stage('Snyk Container (image)') {
+    // ---------- Déploiement local via ANSIBLE (gère conteneur sur l’EC2) ----------
+    stage('Deploy (Ansible - local Docker)') {
+      when { expression { return fileExists('image.txt') } }
+      steps {
+        sh '''
+          set -eux
+          mkdir -p ansible
+
+          # inventaire minimal
+          if [ ! -f ansible/inventory.ini ]; then
+            cat > ansible/inventory.ini <<'INV'
+[local]
+localhost ansible_connection=local
+INV
+          fi
+
+          # playbook minimal (utilise CLI Docker pour éviter les dépendances)
+          if [ ! -f ansible/playbook.yml ]; then
+            cat > ansible/playbook.yml <<'YML'
+- hosts: local
+  gather_facts: false
+  vars:
+    container_name: demoapp-ansible
+    app_port: 5000
+  tasks:
+    - name: Create user-defined network (for ZAP to reach container by name)
+      shell: docker network create appnet || true
+
+    - name: Stop previous container
+      shell: docker rm -f {{ container_name }} || true
+
+    - name: Run new container on appnet
+      shell: docker run -d --name {{ container_name }} --network appnet -p {{ app_port }}:5000 {{ image_name }}
+YML
+          fi
+
+          IMAGE=$(cat image.txt)
+          docker run --rm -v "$PWD/ansible:/ansible" -v /var/run/docker.sock:/var/run/docker.sock -w /ansible \
+            cytopia/ansible:latest ansible-playbook -i inventory.ini playbook.yml --extra-vars "image_name=$IMAGE"
+        '''
+      }
+    }
+
+    // ---------- Snyk SCA avec gate ----------
+    stage('Snyk (SCA) + Gate') {
+      when { expression { fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pom.xml') || fileExists('pyproject.toml') } }
+      options { timeout(time: 8, unit: 'MINUTES') }
+      steps {
+        withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
+          sh '''
+            set -eux
+            mkdir -p reports
+            EXIT=0
+            docker run --rm -e SNYK_TOKEN="$SNYK_TOKEN" \
+              -v "$PWD":/project -w /project \
+              snyk/snyk-cli:linux snyk test \
+                --org="$SNYK_ORG" --all-projects \
+                --severity-threshold='"${SNYK_FAIL_SEV}"' \
+                --json-file-output=reports/snyk-sca.json || EXIT=$?
+
+            docker run --rm -v "$PWD":/work snyk/snyk-to-html \
+              -i /work/reports/snyk-sca.json -o /work/reports/snyk-sca.html || true
+
+            echo $EXIT > reports/snyk-sca.exit
+          '''
+        }
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'snyk-sca.html',
+          reportName: 'Snyk Open Source (SCA)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        archiveArtifacts artifacts: 'reports/snyk-sca.*', fingerprint: true, allowEmptyArchive: true
+      }
+      post {
+        always {
+          script {
+            if (fileExists('reports/snyk-sca.exit')) {
+              def code = readFile('reports/snyk-sca.exit').trim()
+              if (code != '0') { error "Snyk SCA gate failed (>= ${env.SNYK_FAIL_SEV})" }
+            }
+          }
+        }
+      }
+    }
+
+    // ---------- DAST : ZAP Baseline ----------
+    stage('DAST - OWASP ZAP (baseline)') {
       when { expression { fileExists('image.txt') } }
-      options { timeout(time: 6, unit: 'MINUTES') }
+      steps {
+        sh '''
+          set -eux
+          mkdir -p reports
+
+          TARGET="${DAST_TARGET}"
+          ZAP_NET=""
+          if [ -z "$TARGET" ]; then
+            # si pas de cible fournie, on scanne le conteneur déployé via Ansible
+            TARGET="http://demoapp-ansible:5000"
+            ZAP_NET="--network appnet"
+          fi
+
+          docker run --rm $ZAP_NET -v "$PWD/reports:/zap/wrk" owasp/zap2docker-stable \
+            zap-baseline.py -t "$TARGET" -r zap-baseline.html -x zap-baseline.xml -m 5 -d || true
+        '''
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'zap-baseline.html',
+          reportName: 'OWASP ZAP Baseline (DAST)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
+        archiveArtifacts artifacts: 'reports/zap-baseline.*', fingerprint: true, allowEmptyArchive: true
+      }
+    }
+
+    // ---------- Snyk Container sur l'image ----------
+    stage('Snyk Container (image) + Gate') {
+      when { expression { fileExists('image.txt') } }
+      options { timeout(time: 8, unit: 'MINUTES') }
       steps {
         withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
           sh '''
             set -eux
             mkdir -p reports
             IMAGE=$(cat image.txt)
+            EXIT=0
 
-            # Test container (image CLI "docker" contient docker client)
             docker run --rm \
               -e SNYK_TOKEN="$SNYK_TOKEN" \
               -v /var/run/docker.sock:/var/run/docker.sock \
-              -v "$PWD":/project -w /project \
               snyk/snyk-cli:docker snyk container test "$IMAGE" \
                 --org="$SNYK_ORG" \
-                --severity-threshold=medium \
-                --json-file-output=/project/reports/snyk-container.json || true
+                --severity-threshold='"${SNYK_FAIL_SEV}"' \
+                --json-file-output=/tmp/snyk-container.json || EXIT=$?
 
-            docker run --rm \
-              -e SNYK_TOKEN="$SNYK_TOKEN" \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              snyk/snyk-cli:docker snyk container monitor "$IMAGE" \
-                --org="$SNYK_ORG" || true
+            CID=$(docker ps -alq || true)
+            [ -n "$CID" ] && docker cp "$CID":/tmp/snyk-container.json reports/snyk-container.json || true
 
-            docker run --rm -v "$PWD":/work \
-              snyk/snyk-to-html -i /work/reports/snyk-container.json -o /work/reports/snyk-container.html || true
+            docker run --rm -v "$PWD":/work snyk/snyk-to-html \
+              -i /work/reports/snyk-container.json -o /work/reports/snyk-container.html || true
+
+            echo $EXIT > reports/snyk-container.exit
           '''
         }
         publishHTML(target: [reportDir: 'reports', reportFiles: 'snyk-container.html',
           reportName: 'Snyk Container (Image)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-        archiveArtifacts artifacts: 'reports/', fingerprint: true, allowEmptyArchive: true
+        archiveArtifacts artifacts: 'reports/snyk-container.*', fingerprint: true, allowEmptyArchive: true
+      }
+      post {
+        always {
+          script {
+            if (fileExists('reports/snyk-container.exit')) {
+              def code = readFile('reports/snyk-container.exit').trim()
+              if (code != '0') { error "Snyk Container gate failed (>= ${env.SNYK_FAIL_SEV})" }
+            }
+          }
+        }
       }
     }
 
-    stage('DAST - ZAP Baseline') {
-      options { timeout(time: 10, unit: 'MINUTES') }
-      steps {
-        sh '''
-          set -eux
-          mkdir -p reports
-          docker run --rm -v "$PWD/reports:/zap/wrk" owasp/zap2docker-stable \
-            zap-baseline.py -t "$TARGET_URL" -r zap.html -m 1 -a -z "-config api.disablekey=true" || true
-        '''
-        publishHTML(target: [reportDir: 'reports', reportFiles: 'zap.html',
-          reportName: 'OWASP ZAP Baseline', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-      }
-    }
-
+    // ---------- Publication S3 ----------
     stage('Publish reports to S3') {
       when { expression { fileExists('reports') } }
       steps {
@@ -192,22 +279,18 @@ pipeline {
               -e AWS_DEFAULT_REGION="${AWS_REGION}" \
               -v "$PWD/reports:/reports" amazon/aws-cli \
               s3 cp /reports "${DEST}" --recursive --sse AES256
-
-            if [ -f image.txt ]; then
-              docker run --rm \
-                -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
-                -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
-                -e AWS_DEFAULT_REGION="${AWS_REGION}" \
-                -v "$PWD:/w" amazon/aws-cli \
-                s3 cp /w/image.txt "${DEST}"
-            fi
+            [ -f image.txt ] && docker run --rm \
+              -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+              -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+              -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+              -v "$PWD:/w" amazon/aws-cli \
+              s3 cp /w/image.txt "${DEST}" || true
           '''
         }
       }
     }
 
     stage('List uploaded S3 files') {
-      when { expression { return true } }
       steps {
         withCredentials([usernamePassword(credentialsId: 'aws-up',
                                           usernameVariable: 'AWS_ACCESS_KEY_ID',
@@ -250,40 +333,11 @@ pipeline {
         archiveArtifacts artifacts: 'presigned-urls.txt', allowEmptyArchive: true
       }
     }
-
-    // -------- Optionnels (réseau/SSH) ----------
-    stage('Test SSH to target') {
-      when { expression { return false } } // mets à true si tu veux tester
-      steps {
-        sshagent(credentials: ['ansible-ssh']) {
-          sh 'ssh -o StrictHostKeyChecking=no ubuntu@13.62.105.249 "whoami && uname -a"'
-        }
-      }
-    }
-
-    stage('Ansible deploy') {
-      when { expression { return false } } // mets à true quand tes playbooks sont prêts
-      steps {
-        withCredentials([sshUserPrivateKey(credentialsId: 'ansible-ssh',
-                                           keyFileVariable: 'SSH_KEY',
-                                           usernameVariable: 'SSH_USER')]) {
-          sh '''
-            set -eux
-            export ANSIBLE_HOST_KEY_CHECKING=False
-            docker run --rm -v "$PWD":/work -w /work \
-              -v "$SSH_KEY":/tmp/sshkey:ro \
-              cytopia/ansible:latest \
-              ansible-playbook -i "13.62.105.249," -u "$SSH_USER" --private-key /tmp/sshkey playbooks/deploy.yml
-          '''
-        }
-      }
-    }
-    // -------------------------------------------
   }
 
   post {
     always {
-      archiveArtifacts artifacts: '/target/.jar, **/.log, reports//.html, reports//.json, image.txt', allowEmptyArchive: true
+      archiveArtifacts artifacts: '/target/.jar, **/.log, reports//.html, reports//.json, reports/*.sarif, image.txt', allowEmptyArchive: true
     }
   }
 }
