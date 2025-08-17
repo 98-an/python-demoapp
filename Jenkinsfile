@@ -170,7 +170,7 @@ pipeline {
   steps {
     withCredentials([[
       $class: 'AmazonWebServicesCredentialsBinding',
-      credentialsId: 'aws-jenkins'   // l’ID que tu as créé dans Jenkins
+      credentialsId: 'aws-up'   // l’ID que tu as créé dans Jenkins
     ]]) {
       sh '''
         set -eux
@@ -194,6 +194,46 @@ pipeline {
         fi
       '''
     }
+  }
+}
+  stage('List uploaded S3 files') {
+  steps {
+    withCredentials([[
+      $class: 'AmazonWebServicesCredentialsBinding',
+      credentialsId: 'aws-up'
+    ]]) {
+      sh '''
+        DEST="s3://${S3_BUCKET}/${JOB_NAME}/${BUILD_NUMBER}/"
+        docker run --rm \
+          -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+          -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+          -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+          amazon/aws-cli s3 ls "$DEST" --recursive || true
+      '''
+    }
+  }
+}
+
+  stage('Make presigned URLs (1h)') {
+  steps {
+    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-up']]) {
+      sh '''
+        set -eu
+        PREFIX="${JOB_NAME}/${BUILD_NUMBER}"
+        : > presigned-urls.txt
+        for f in reports/*; do
+          key="${PREFIX}/$(basename "$f")"
+          url=$(docker run --rm \
+            -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+            -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+            -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+            -v "$PWD:/w" amazon/aws-cli \
+            aws s3 presign "s3://${S3_BUCKET}/${key}" --expires-in 3600)
+          echo "${key} -> ${url}" | tee -a presigned-urls.txt
+        done
+      '''
+    }
+    archiveArtifacts artifacts: 'presigned-urls.txt', allowEmptyArchive: true
   }
 }
 
