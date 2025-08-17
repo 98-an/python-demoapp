@@ -10,6 +10,8 @@ pipeline {
   environment {
     SNYK_ORG   = '98-an'                        // ton org Snyk (slug)
     IMAGE_NAME = "demoapp:${env.BUILD_NUMBER}"  // image locale pour les scans
+    S3_BUCKET = 'cryptonext-reports-98an'
+    AWS_REGION = 'eu-north-1'
   }
 
   stages {
@@ -162,6 +164,38 @@ pipeline {
       }
     }
   }
+
+  stage('Publish reports to S3') {
+  when { expression { fileExists('reports') } }
+  steps {
+    withCredentials([[
+      $class: 'AmazonWebServicesCredentialsBinding',
+      credentialsId: 'aws-jenkins'   // l’ID que tu as créé dans Jenkins
+    ]]) {
+      sh '''
+        set -eux
+        # On envoie les rapports dans un chemin par job et par build
+        DEST="s3://${S3_BUCKET}/${JOB_NAME}/${BUILD_NUMBER}/"
+        docker run --rm \
+          -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+          -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+          -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+          -v "$PWD/reports:/reports" amazon/aws-cli \
+          s3 cp /reports "${DEST}" --recursive --sse AES256
+
+        # (optionnel) uploader aussi l'image.txt et les logs s'ils existent
+        if [ -f image.txt ]; then
+          docker run --rm \
+            -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+            -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+            -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+            -v "$PWD:/w" amazon/aws-cli \
+            s3 cp /w/image.txt "${DEST}"
+        fi
+      '''
+    }
+  }
+}
 
   post {
     always {
