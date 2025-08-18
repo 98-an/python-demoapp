@@ -36,27 +36,28 @@ pipeline {
           set -eux
 
           # Tout s’exécute dans un conteneur Python propre
-          docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim bash -lc "
+          docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim bash -lc '
             set -eux
             python -m pip install --upgrade pip
 
-            # 1) Chercher un requirements.txt
-            REQ_FILE=$(find . -type f -name requirements.txt \
-              -not -path './.git/*' \
-              -not -path './reports/*' \
-              -not -path './pycache/*' \
-              -not -path './.pytest_cache/*' \
-              -not -path './.venv/*' \
-              -not -path './node_modules/*' \
-              -not -path './build/*' \
-              -not -path './ci/*' \
-              -print -quit || true)
+            # 1) Chercher un requirements.txt (robuste même si find ne trouve rien)
+            REQ_FILE="$(find . -type f -name requirements.txt \
+              -not -path "./.git/*" \
+              -not -path "./reports/*" \
+              -not -path "./pycache/*" \
+              -not -path "./.pytest_cache/*" \
+              -not -path "./.venv/*" \
+              -not -path "./node_modules/*" \
+              -not -path "./build/*" \
+              -not -path "./ci/*" \
+              -print -quit || true)"
+            REQ_FILE="${REQ_FILE:-}"
 
-            if [ -n '$REQ_FILE' ]; then
-              echo 'Installing app deps from: $REQ_FILE'
-              pip install --prefer-binary -r '$REQ_FILE'
+            if [ -n "$REQ_FILE" ]; then
+              echo "Installing app deps from: $REQ_FILE"
+              pip install --prefer-binary -r "$REQ_FILE"
             else
-              echo 'No requirements.txt found — skipping app deps install.'
+              echo "No requirements.txt found — skipping app deps install."
             fi
 
             # 2) Outils qualité
@@ -65,22 +66,23 @@ pipeline {
             # 3) Lint (ne casse pas le build)
             flake8 || :
 
-            # 4) Tests
+            # 4) Tests (rapports centralisés dans /ws/reports)
             pytest --maxfail=1 \
               --cov=. \
               --cov-report=xml:/ws/reports/coverage.xml \
               --junitxml=/ws/reports/pytest-report.xml || :
 
-            # 5) Bandit : 3 formats
+            # 5) Bandit : scanner le code sous src/ et générer 3 formats
             mkdir -p /ws/reports
             bandit -r src -f html  -o /ws/reports/bandit-report.html || :
             bandit -r src -f txt   -o /ws/reports/bandit.txt        || :
-            bandit -r src -f sarif -o /ws/reports/bandit.sarif      || :
+            bandit -r src -f json  -o /ws/reports/bandit.json       || :
 
+            # (Optionnel) aperçu texte dans la console
             bandit -r src -f txt || :
-          "
+          '
 
-          # 6) Fallback JUnit
+          # 6) Fallback JUnit : si pas de <testcase>, on écrit 1 test "dummy"
           if [ ! -s reports/pytest-report.xml ] || ! grep -q "<testcase" reports/pytest-report.xml; then
             cat > reports/pytest-report.xml <<'XML'
 <testsuite name="fallback" tests="1" failures="0" errors="0" skipped="0">
@@ -89,16 +91,17 @@ pipeline {
 XML
           fi
 
-          # 7) Résumé Bandit
-          COUNT=$(grep -o '"ruleId":' reports/bandit.sarif 2>/dev/null | wc -l || echo 0)
+          # 7) Résumé Bandit : comptage depuis le JSON (clé "test_id")
+          COUNT=$(grep -o '"test_id"' reports/bandit.json 2>/dev/null | wc -l || echo 0)
           {
             echo "<html><body><h2>Bandit (résumé)</h2><pre>"
             echo "Findings: ${COUNT}"
-            echo "</pre><p><a href=\\"bandit-report.html\\">➡ Rapport HTML détaillé</a></p>"
+            echo "</pre><p><a href=\\"bandit-report.html\\">➡ Rapport HTML détaillé</a> • <a href=\\"bandit.json\\">JSON</a></p>"
             echo "</body></html>"
           } > reports/bandit-summary.html
         '''
 
+        // Publier les rapports
         junit allowEmptyResults: true, testResults: 'reports/pytest-report.xml'
 
         publishHTML(target: [
@@ -125,6 +128,7 @@ XML
           set -eux
           mkdir -p reports
 
+          # Config ruleset
           if [ -f security/semgrep-rules.yml ]; then
             CFG="--config security/semgrep-rules.yml"
           else
@@ -137,19 +141,18 @@ XML
                     --exclude deploy --exclude infra --exclude monitoring \
                     --exclude reports"
 
-          # JSON
+          # 1) JSON
           docker run --rm -v "$PWD":/src -w /src semgrep/semgrep:latest \
             semgrep scan $CFG $EXCLUDES --timeout 0 --error \
             --json --output /src/reports/semgrep.json || true
 
-          # SARIF
+          # 2) SARIF
           docker run --rm -v "$PWD":/src -w /src semgrep/semgrep:latest \
             semgrep scan $CFG $EXCLUDES --timeout 0 --error \
             --sarif --output /src/reports/semgrep.sarif || true
 
-          # Résumé HTML dans conteneur Python
-          docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim bash -lc "
-            python - <<'PY'
+          # 3) Résumé HTML (via conteneur Python pour garantir python dispo)
+          docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim python - <<'PY'
 import json, html, pathlib
 p = pathlib.Path('reports/semgrep.json')
 count = 0; rows = []
@@ -162,22 +165,23 @@ if p.exists():
         sev  = r.get('extra', {}).get('severity', '')
         rule = r.get('check_id', '')
         path = r.get('path', '')
-        line = r.get('start', {}).get('line', '')
-        rows.append(f\"<tr><td>{html.escape(rule)}</td><td>{html.escape(sev)}</td>\" 
-                    f\"<td>{html.escape(path)}:{line}</td><td>{html.escape(msg)}</td></tr>\")
-html_doc = f\"\"\"<html><body><h2>Semgrep (résumé)</h2><pre>
+        start = r.get('start', {}) or {}
+        line = start.get('line', '')
+        rows.append(f"<tr><td>{html.escape(str(rule))}</td><td>{html.escape(str(sev))}</td>"
+                    f"<td>{html.escape(str(path))}:{line}</td><td>{html.escape(str(msg))}</td></tr>")
+html_doc = f"""<html><body><h2>Semgrep (résumé)</h2><pre>
 Findings: {count}
-</pre><p><a href='semgrep.sarif'>Télécharger SARIF</a> • <a href='semgrep.json'>JSON</a></p>
+</pre><p><a href='reports/semgrep.sarif'>Télécharger SARIF</a> • <a href='reports/semgrep.json'>JSON</a></p>
 <table border='1' cellpadding='4' cellspacing='0'>
 <tr><th>Règle</th><th>Sévérité</th><th>Fichier</th><th>Message</th></tr>
 {''.join(rows) if rows else '<tr><td colspan=4>Aucun résultat</td></tr>'}
-</table></body></html>\"\"\"
+</table></body></html>"""
 pathlib.Path('reports/semgrep-summary.html').write_text(html_doc)
-print(f\"Semgrep findings: {count}\")
+print(f"Semgrep findings: {count}")
 PY
-          "
         '''
 
+        // Publication & archivage
         publishHTML(target: [
           reportDir: 'reports',
           reportFiles: 'semgrep-summary.html',
