@@ -9,23 +9,19 @@ pipeline {
   }
 
   environment {
-    // --- Build / Image
-    IMAGE_NAME         = "demoapp:${env.BUILD_NUMBER}"
+    IMAGE_NAME        = "demoapp:${env.BUILD_NUMBER}"
 
-    // --- S3 (rapports)
-    S3_BUCKET          = 'cryptonext-reports-98an'
-    AWS_REGION         = 'eu-north-1'
+    // S3
+    S3_BUCKET         = 'cryptonext-reports-98an'
+    AWS_REGION        = 'eu-north-1'
 
-    // --- DAST (URL de ton appli)
-    DAST_TARGET        = 'http://13.62.105.249:5000'
+    // ZAP DAST (modifie l’URL si besoin)
+    DAST_TARGET       = 'http://13.62.105.249:5000'
 
-    // --- SonarCloud
-    SONAR_HOST_URL     = 'https://sonarcloud.io'
-    SONAR_ORG          = '98-an'
-    SONAR_PROJECT_KEY  = '98-an_python-demoapp'
-
-    // --- Docker Compose (nom logique du projet monitoring)
-    COMPOSE_PROJECT_NAME = 'monitoring'
+    // SonarCloud
+    SONAR_HOST_URL    = 'https://sonarcloud.io'
+    SONAR_ORG         = '98-an'
+    SONAR_PROJECT_KEY = '98-an_python-demoapp'
   }
 
   stages {
@@ -45,7 +41,7 @@ pipeline {
           docker run --rm -v "$PWD":/ws -w /ws \
             maven:3.9-eclipse-temurin-17 mvn -B -DskipTests=false clean test
         '''
-        junit 'target/surefire-reports/*.xml'
+        junit '/target/surefire-reports/*.xml'
       }
     }
 
@@ -63,7 +59,7 @@ pipeline {
             pip install pytest flake8 bandit pytest-cov
 
             flake8 || true
-            # tests + coverage pour SonarCloud
+            # tests + coverage (pour Sonar)
             pytest --maxfail=1 --cov=. --cov-report=xml:coverage.xml --junitxml=pytest-report.xml || true
 
             # rapport HTML Bandit
@@ -91,9 +87,11 @@ pipeline {
       steps {
         sh '''
           set -eux
+          # SARIF
           docker run --rm -v "$PWD":/repo zricethezav/gitleaks:latest \
             detect -s /repo -f sarif -r /repo/reports/gitleaks.sarif || true
 
+          # Résumé HTML simple
           {
             echo '<html><body><h2>Gitleaks (résumé)</h2><pre>'
             grep -o '"ruleId":' reports/gitleaks.sarif | wc -l | xargs echo "Findings:" || true
@@ -170,7 +168,6 @@ pipeline {
 
           docker run --rm -v "$PWD":/project aquasec/trivy:latest \
             fs --scanners vuln,secret,config -f table /project > reports/trivy-fs.txt || true
-
           { echo '<html><body><h2>Trivy FS</h2><pre>'; cat reports/trivy-fs.txt; echo '</pre></body></html>'; } \
             > reports/trivy-fs.html
         '''
@@ -237,7 +234,6 @@ pipeline {
               -e AWS_DEFAULT_REGION="${AWS_REGION}" \
               -v "$PWD/reports:/reports" amazon/aws-cli \
               s3 cp /reports "${DEST}" --recursive --sse AES256
-
             [ -f image.txt ] && docker run --rm \
               -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
               -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
@@ -299,27 +295,29 @@ pipeline {
           set -eux
           cd monitoring
 
-          # Essaye d'abord Compose v2 (GHCR), sinon fallback v1 (Docker Hub)
-          COMPOSE_IMG="ghcr.io/docker/compose:2.27.0"
-          docker pull "$COMPOSE_IMG" || COMPOSE_IMG="docker/compose:1.29.2"
+          # Utilisation de Docker Compose en conteneur (fallback stable v1)
+          COMPOSE_IMG=docker/compose:1.29.2
 
-          # Vérifier / valider
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/work -w /work \
-            -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" "$COMPOSE_IMG" version
+          # Validation du fichier
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/work -w /work \
+            -e COMPOSE_PROJECT_NAME=monitoring \
+            $COMPOSE_IMG config -q
 
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/work -w /work \
-            -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" "$COMPOSE_IMG" config -q
+          # Démarrage
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/work -w /work \
+            -e COMPOSE_PROJECT_NAME=monitoring \
+            $COMPOSE_IMG up -d --remove-orphans
 
-          # Redémarrage propre
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/work -w /work \
-            -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" "$COMPOSE_IMG" down --remove-orphans || true
-
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/work -w /work \
-            -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" "$COMPOSE_IMG" up -d
-
-          # État lisible
-          docker ps --format "table {{.Names}}\\t{{.Ports}}\\t{{.Status}}" \
-            | egrep -i "grafana|prometheus|cadvisor" || true
+          # Etat
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/work -w /work \
+            -e COMPOSE_PROJECT_NAME=monitoring \
+            $COMPOSE_IMG ps
         '''
       }
     }
@@ -328,7 +326,7 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'reports/, /target/.jar, *.log', allowEmptyArchive: true
+      archiveArtifacts artifacts: 'reports/, /target/.jar, /.log', allowEmptyArchive: true
     }
   }
 }
