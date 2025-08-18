@@ -22,18 +22,14 @@ pipeline {
 
   stages {
 
-    /* -------------------- 1) CHECKOUT -------------------- */
     stage('Checkout') {
       steps {
         checkout scm
-        script {
-          env.SHORT_SHA = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
-        }
+        script { env.SHORT_SHA = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim() }
         sh 'rm -rf reports && mkdir -p reports'
       }
     }
 
-    /* -------- 2) PYTHON: Lint + Tests + Bandit (+summary) -------- */
     stage('Python Lint & Tests & Bandit') {
       when { expression { fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pyproject.toml') } }
       steps {
@@ -41,62 +37,34 @@ pipeline {
           set -eux
           docker run --rm \
             -v "$PWD":/ws -w /ws python:3.11-slim bash -lc '
-              set -e
+              set -eux
               python -m pip install --upgrade pip
               if   [ -f src/requirements.txt ]; then pip install --prefer-binary -r src/requirements.txt
               elif [ -f requirements.txt ];    then pip install --prefer-binary -r requirements.txt
               fi
-              pip install pytest flake8 bandit pytest-cov pyyaml
+              pip install pytest flake8 bandit pytest-cov
 
               # Lint (ne casse pas le build)
               flake8 || :
 
               # Tests → rapports centralisés dans /ws/reports
-              mkdir -p /ws/reports
               pytest --maxfail=1 \
                 --cov=. \
                 --cov-report=xml:/ws/reports/coverage.xml \
                 --junitxml=/ws/reports/pytest-report.xml || :
 
-              # Bandit : HTML + JSON (pour le summary)
-              TARGET="src"; [ -d src ] || TARGET="."
-              bandit -r "$TARGET" -f html -o /ws/reports/bandit-report.html || :
-              bandit -r "$TARGET" -f json -o /ws/reports/bandit.json       || :
+              # Bandit HTML
+              bandit -r . -f html -o /ws/reports/bandit-report.html || :
             '
-
           # Fallback XML si aucun test n'existe (pour satisfaire junit)
           test -f reports/pytest-report.xml || echo '<testsuite tests="0"></testsuite>' > reports/pytest-report.xml
-
-          # Summary Bandit fiable via Python (compte les résultats JSON)
-          docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim python - <<'PY'
-import json, pathlib
-p = pathlib.Path("reports/bandit.json")
-count = 0
-if p.exists():
-  try:
-    data = json.loads(p.read_text() or "{}")
-    res  = data.get("results") or []
-    count = len(res) if isinstance(res, list) else 0
-  except Exception:
-    pass
-pathlib.Path("reports/bandit-summary.html").write_text(
-  f"<html><body><h2>Bandit (résumé)</h2><pre>Findings: {count}</pre>"
-  f"<p><a href='bandit-report.html'>Rapport HTML</a> • "
-  f"<a href='bandit.json'>JSON</a></p></body></html>"
-)
-PY
         '''
-
         junit allowEmptyResults: true, testResults: 'reports/pytest-report.xml'
         publishHTML(target: [reportDir: 'reports', reportFiles: 'bandit-report.html',
           reportName: 'Bandit - Python SAST', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-        publishHTML(target: [reportDir: 'reports', reportFiles: 'bandit-summary.html',
-          reportName: 'Bandit (Résumé)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-        archiveArtifacts artifacts: 'reports/bandit.*, reports/coverage.xml, reports/pytest-report.xml', allowEmptyArchive: true
       }
     }
 
-    /* -------------------- 3) HADOLINT -------------------- */
     stage('Hadolint (Dockerfile)') {
       when { expression { fileExists('Dockerfile') || fileExists('container/Dockerfile') || fileExists('build/Dockerfile') } }
       steps {
@@ -105,28 +73,11 @@ PY
           DF="Dockerfile"
           [ -f "$DF" ] || DF="container/Dockerfile"
           [ -f "$DF" ] || DF="build/Dockerfile"
-          mkdir -p reports
-
-          # Rapports TXT + JSON (pour summary)
-          docker run --rm -i hadolint/hadolint hadolint -f tty  - < "$DF" > reports/hadolint.txt  || true
-          docker run --rm -i hadolint/hadolint hadolint -f json - < "$DF" > reports/hadolint.json || true
-
-          # Summary HTML
-          COUNT=$(grep -o '"level"' reports/hadolint.json 2>/dev/null | wc -l || echo 0)
-          {
-            echo "<html><body><h2>Hadolint (résumé)</h2><pre>"
-            echo "Dockerfile: ${DF}"
-            echo "Findings: ${COUNT}"
-            echo "</pre><p><a href=\\"hadolint.txt\\">TXT</a> • <a href=\\"hadolint.json\\">JSON</a></p></body></html>"
-          } > reports/hadolint-summary.html
+          docker run --rm -i hadolint/hadolint < "$DF" || :
         '''
-        publishHTML(target: [reportDir: 'reports', reportFiles: 'hadolint-summary.html',
-          reportName: 'Hadolint (Résumé)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
-        archiveArtifacts artifacts: 'reports/hadolint.*', allowEmptyArchive: true
       }
     }
 
-    /* -------------------- 4) GITLEAKS -------------------- */
     stage('Gitleaks (Secrets, repo + historique)') {
       steps {
         sh '''
@@ -148,7 +99,7 @@ PY
             else
               echo "Findings: 0"
             fi
-            echo '</pre><p><a href="gitleaks.sarif">SARIF</a></p></body></html>'
+            echo '</pre></body></html>'
           } > reports/gitleaks.html
         '''
         archiveArtifacts artifacts: 'reports/gitleaks.sarif', allowEmptyArchive: true
@@ -157,7 +108,6 @@ PY
       }
     }
 
-    /* -------------------- 5) SEMGREP -------------------- */
     stage('Semgrep (SAST, avec Git & excludes)') {
       steps {
         sh '''
@@ -169,9 +119,10 @@ PY
             returntocorp/semgrep:latest bash -lc "
               set -eux
               git config --global --add safe.directory /src || :
+              # Utilise p/ci et, si présent, le fichier local de règles
               CFGS='--config p/ci'
               if [ -f /src/security/semgrep-rules.yml ]; then
-                CFGS=\\"$CFGS --config /src/security/semgrep-rules.yml\\"
+                CFGS=\"$CFGS --config /src/security/semgrep-rules.yml\"
               fi
               semgrep ${CFGS} \
                 --sarif --output /src/reports/semgrep.sarif \
@@ -189,7 +140,7 @@ PY
             else
               echo "Findings: 0"
             fi
-            echo '</pre><p><a href="semgrep.sarif">SARIF</a></p></body></html>'
+            echo '</pre></body></html>'
           } > reports/semgrep.html
         '''
         archiveArtifacts artifacts: 'reports/semgrep.sarif', allowEmptyArchive: true
@@ -198,7 +149,6 @@ PY
       }
     }
 
-    /* -------------------- 6) SONARCLOUD -------------------- */
     stage('SonarCloud') {
       steps {
         withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
@@ -226,7 +176,6 @@ PY
       }
     }
 
-    /* -------------------- 7) BUILD IMAGE -------------------- */
     stage('Build Image (si Dockerfile présent)') {
       when { expression { fileExists('Dockerfile') || fileExists('container/Dockerfile') || fileExists('build/Dockerfile') } }
       steps {
@@ -242,12 +191,10 @@ PY
       }
     }
 
-    /* -------------------- 8) TRIVY FS -------------------- */
     stage('Trivy FS (src/)') {
       steps {
         sh '''
           set -eux
-          mkdir -p reports
           docker run --rm -v "$PWD":/project aquasec/trivy:latest \
             fs --scanners vuln,secret,misconfig \
                --format sarif -o /project/reports/trivy-fs.sarif \
@@ -265,7 +212,6 @@ PY
       }
     }
 
-    /* -------------------- 9) TRIVY IMAGE -------------------- */
     stage('Trivy Image (si image.txt)') {
       when { expression { fileExists('image.txt') } }
       steps {
@@ -291,7 +237,6 @@ PY
       }
     }
 
-    /* -------------------- 10) ZAP DAST -------------------- */
     stage('DAST - ZAP Baseline') {
       options { timeout(time: 8, unit: 'MINUTES') }
       steps {
@@ -305,7 +250,7 @@ PY
       }
     }
 
-    /* ----------- (Optionnel) Publication S3 des rapports ----------- 
+    /*  ————————  Publis S3 (facultatif) ————————
     stage('Publish reports to S3') {
       when { expression { fileExists('reports') } }
       steps {
