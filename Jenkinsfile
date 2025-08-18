@@ -1,5 +1,6 @@
 pipeline {
   agent any
+
   options {
     skipDefaultCheckout(true)
     timestamps()
@@ -8,6 +9,7 @@ pipeline {
   }
 
   stages {
+
     stage('Checkout') {
       steps {
         checkout scm
@@ -27,10 +29,63 @@ pipeline {
         }
       }
     }
+
+    stage('Python Lint & Tests & Bandit') {
+      // on déclenche si au moins un des fichiers de conf existe
+      when { expression { fileExists('src/app/requirements.txt') || fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pyproject.toml') } }
+      steps {
+        sh '''
+          set -eux
+
+          docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim bash -lc '
+            set -eux
+            python -m pip install --upgrade pip
+
+            # === Dépendances selon ton arbo ===
+            if   [ -f src/app/requirements.txt ]; then
+                 pip install --prefer-binary -r src/app/requirements.txt
+            elif [ -f src/requirements.txt ]; then
+                 pip install --prefer-binary -r src/requirements.txt
+            elif [ -f requirements.txt ]; then
+                 pip install --prefer-binary -r requirements.txt
+            fi
+
+            # Outils qualité
+            pip install --prefer-binary pytest pytest-cov flake8 bandit
+
+            # Lint (ne casse pas le build)
+            flake8 || :
+
+            # Tests (écrit tout dans /ws/reports)
+            pytest --maxfail=1 \
+              --cov=. \
+              --cov-report=xml:/ws/reports/coverage.xml \
+              --junitxml=/ws/reports/pytest-report.xml || :
+
+            # SAST Python
+            bandit -r . -f html -o /ws/reports/bandit-report.html || :
+          '
+
+          # Fallback si aucun test n’a tourné (pour que 'junit' ait un fichier)
+          test -f reports/pytest-report.xml || echo "<testsuite tests=\\"0\\"></testsuite>" > reports/pytest-report.xml
+        '''
+
+        // Publier les rapports
+        junit allowEmptyResults: true, testResults: 'reports/pytest-report.xml'
+        publishHTML(target: [
+          reportDir: 'reports',
+          reportFiles: 'bandit-report.html',
+          reportName: 'Bandit - Python SAST',
+          keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true
+        ])
+      }
+    }
+
   }
 
   post {
     always {
+      // petit récap checkout
       sh '''
         set -eux
         BR="${BRANCH_NAME:-$(git symbolic-ref -q --short HEAD || git name-rev --name-only HEAD || echo detached)}"
@@ -40,7 +95,7 @@ pipeline {
           echo "Is shallow: $(git rev-parse --is-shallow-repository || true)"
         } > checkout-info.txt
       '''
-      archiveArtifacts artifacts: 'Jenkinsfile, checkout-info.txt', allowEmptyArchive: true
+      archiveArtifacts artifacts: 'Jenkinsfile, checkout-info.txt, reports/', allowEmptyArchive: true
     }
   }
 }
