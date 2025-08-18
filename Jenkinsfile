@@ -15,7 +15,6 @@ pipeline {
         checkout scm
         sh '''
           set -eux
-          # Infos et unshallow si besoin
           git remote -v || true
           git rev-parse HEAD || true
           git rev-parse --is-shallow-repository && git fetch --unshallow --tags --prune || true
@@ -40,7 +39,7 @@ pipeline {
             set -eux
             python -m pip install --upgrade pip
 
-            # 1) Chercher un requirements.txt (sans heredoc pour éviter les soucis de quoting)
+            # 1) Installer les deps si un requirements.txt est présent
             REQ_FILE=$(find . -type f -name requirements.txt \
               -not -path "./.git/*" \
               -not -path "./reports/*" \
@@ -51,7 +50,6 @@ pipeline {
               -not -path "./build/*" \
               -not -path "./ci/*" \
               -print -quit || true)
-
             if [ -n "$REQ_FILE" ]; then
               echo "Installing app deps from: $REQ_FILE"
               pip install --prefer-binary -r "$REQ_FILE"
@@ -71,14 +69,15 @@ pipeline {
               --cov-report=xml:/ws/reports/coverage.xml \
               --junitxml=/ws/reports/pytest-report.xml || :
 
-            # 5) Bandit : scanner le code sous src/ et générer 3 formats
+            # 5) Bandit : scanner tout le repo en excluant les dossiers non-code
             mkdir -p /ws/reports
-            bandit -r src -f html  -o /ws/reports/bandit-report.html || :
-            bandit -r src -f txt   -o /ws/reports/bandit.txt        || :
-            bandit -r src -f sarif -o /ws/reports/bandit.sarif      || :
+            EXCLUDES=".git,.venv,.pytest_cache,_pycache_,node_modules,build,ci,container,deploy,infra,monitoring,reports"
+            bandit -r . --ignore-nosec -x "$EXCLUDES" -f html  -o /ws/reports/bandit-report.html || :
+            bandit -r . --ignore-nosec -x "$EXCLUDES" -f txt   -o /ws/reports/bandit.txt        || :
+            bandit -r . --ignore-nosec -x "$EXCLUDES" -f json  -o /ws/reports/bandit.json       || :
 
             # (Optionnel) aperçu texte dans la console
-            bandit -r src -f txt || :
+            bandit -r . --ignore-nosec -x "$EXCLUDES" -f txt || :
           '
 
           # 6) Fallback JUnit : si pas de <testcase>, on écrit 1 test "dummy"
@@ -90,14 +89,23 @@ pipeline {
 XML
           fi
 
-          # 7) Résumé Bandit : compteur de findings + lien vers le HTML
-          COUNT=$(grep -o '"ruleId":' reports/bandit.sarif 2>/dev/null | wc -l || echo 0)
-          {
-            echo "<html><body><h2>Bandit (résumé)</h2><pre>"
-            echo "Findings: ${COUNT}"
-            echo "</pre><p><a href=\\"bandit-report.html\\">➡ Rapport HTML détaillé</a></p>"
-            echo "</body></html>"
-          } > reports/bandit-summary.html
+          # 7) Résumé Bandit (on compte proprement les issues à partir du JSON)
+          docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim python - <<'PY'
+import json, sys
+try:
+    with open("reports/bandit.json","r") as f:
+        data = json.load(f)
+    results = data.get("results", [])
+    count = len(results)
+except Exception:
+    count = 0
+html = f"""<html><body><h2>Bandit (résumé)</h2><pre>
+Findings: {count}
+</pre><p><a href="bandit-report.html">➡ Rapport HTML détaillé</a></p>
+</body></html>"""
+open("reports/bandit-summary.html","w").write(html)
+print(f"Bandit findings: {count}")
+PY
         '''
 
         // Publier les rapports
@@ -121,8 +129,6 @@ XML
         archiveArtifacts artifacts: 'reports/bandit.*, reports/coverage.xml, reports/pytest-report.xml', allowEmptyArchive: true
       }
     }
-
-    // On ajoutera les autres stages (Semgrep, Hadolint, Trivy, Sonar…) après validation de celui-ci.
   }
 
   post {
