@@ -36,27 +36,27 @@ pipeline {
           set -eux
 
           # Tout s’exécute dans un conteneur Python propre
-          docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim bash -lc '
+          docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim bash -lc "
             set -eux
             python -m pip install --upgrade pip
 
             # 1) Chercher un requirements.txt
             REQ_FILE=$(find . -type f -name requirements.txt \
-              -not -path "./.git/*" \
-              -not -path "./reports/*" \
-              -not -path "./pycache/*" \
-              -not -path "./.pytest_cache/*" \
-              -not -path "./.venv/*" \
-              -not -path "./node_modules/*" \
-              -not -path "./build/*" \
-              -not -path "./ci/*" \
+              -not -path './.git/*' \
+              -not -path './reports/*' \
+              -not -path './pycache/*' \
+              -not -path './.pytest_cache/*' \
+              -not -path './.venv/*' \
+              -not -path './node_modules/*' \
+              -not -path './build/*' \
+              -not -path './ci/*' \
               -print -quit || true)
 
-            if [ -n "$REQ_FILE" ]; then
-              echo "Installing app deps from: $REQ_FILE"
-              pip install --prefer-binary -r "$REQ_FILE"
+            if [ -n '$REQ_FILE' ]; then
+              echo 'Installing app deps from: $REQ_FILE'
+              pip install --prefer-binary -r '$REQ_FILE'
             else
-              echo "No requirements.txt found — skipping app deps install."
+              echo 'No requirements.txt found — skipping app deps install.'
             fi
 
             # 2) Outils qualité
@@ -65,21 +65,20 @@ pipeline {
             # 3) Lint (ne casse pas le build)
             flake8 || :
 
-            # 4) Tests (rapports centralisés dans /ws/reports)
+            # 4) Tests
             pytest --maxfail=1 \
               --cov=. \
               --cov-report=xml:/ws/reports/coverage.xml \
               --junitxml=/ws/reports/pytest-report.xml || :
 
-            # 5) Bandit : scanner le code sous src/ et générer 3 formats
+            # 5) Bandit : 3 formats
             mkdir -p /ws/reports
             bandit -r src -f html  -o /ws/reports/bandit-report.html || :
             bandit -r src -f txt   -o /ws/reports/bandit.txt        || :
             bandit -r src -f sarif -o /ws/reports/bandit.sarif      || :
 
-            # (Optionnel) aperçu texte dans la console
             bandit -r src -f txt || :
-          '
+          "
 
           # 6) Fallback JUnit
           if [ ! -s reports/pytest-report.xml ] || ! grep -q "<testcase" reports/pytest-report.xml; then
@@ -100,7 +99,6 @@ XML
           } > reports/bandit-summary.html
         '''
 
-        // Publier les rapports
         junit allowEmptyResults: true, testResults: 'reports/pytest-report.xml'
 
         publishHTML(target: [
@@ -122,38 +120,36 @@ XML
     }
 
     stage('Semgrep SAST') {
-  steps {
-    sh '''
-      set -eux
-      mkdir -p reports
+      steps {
+        sh '''
+          set -eux
+          mkdir -p reports
 
-      # Config ruleset
-      if [ -f security/semgrep-rules.yml ]; then
-        CFG="--config security/semgrep-rules.yml"
-      else
-        CFG="--config p/ci"
-      fi
+          if [ -f security/semgrep-rules.yml ]; then
+            CFG="--config security/semgrep-rules.yml"
+          else
+            CFG="--config p/ci"
+          fi
 
-      EXCLUDES="--exclude .git --exclude .venv --exclude pycache \
-                --exclude .pytest_cache --exclude node_modules \
-                --exclude build --exclude ci --exclude container \
-                --exclude deploy --exclude infra --exclude monitoring \
-                --exclude reports"
+          EXCLUDES="--exclude .git --exclude .venv --exclude pycache \
+                    --exclude .pytest_cache --exclude node_modules \
+                    --exclude build --exclude ci --exclude container \
+                    --exclude deploy --exclude infra --exclude monitoring \
+                    --exclude reports"
 
-      # 1) JSON
-      docker run --rm -v "$PWD":/src -w /src semgrep/semgrep:latest \
-        semgrep scan $CFG $EXCLUDES --timeout 0 --error \
-        --json --output /src/reports/semgrep.json || true
+          # JSON
+          docker run --rm -v "$PWD":/src -w /src semgrep/semgrep:latest \
+            semgrep scan $CFG $EXCLUDES --timeout 0 --error \
+            --json --output /src/reports/semgrep.json || true
 
-      # 2) SARIF
-      docker run --rm -v "$PWD":/src -w /src semgrep/semgrep:latest \
-        semgrep scan $CFG $EXCLUDES --timeout 0 --error \
-        --sarif --output /src/reports/semgrep.sarif || true
+          # SARIF
+          docker run --rm -v "$PWD":/src -w /src semgrep/semgrep:latest \
+            semgrep scan $CFG $EXCLUDES --timeout 0 --error \
+            --sarif --output /src/reports/semgrep.sarif || true
 
-      # 3) Résumé HTML : exécution via conteneur Python
-      docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim bash -lc "
-        set -eux
-        python - <<'PY'
+          # Résumé HTML dans conteneur Python
+          docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim bash -lc "
+            python - <<'PY'
 import json, html, pathlib
 p = pathlib.Path('reports/semgrep.json')
 count = 0; rows = []
@@ -179,19 +175,19 @@ Findings: {count}
 pathlib.Path('reports/semgrep-summary.html').write_text(html_doc)
 print(f\"Semgrep findings: {count}\")
 PY
-      "
-    '''
+          "
+        '''
 
-    // Publis & archives
-    publishHTML(target: [
-      reportDir: 'reports',
-      reportFiles: 'semgrep-summary.html',
-      reportName: 'Semgrep (Résumé)',
-      keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true
-    ])
-    archiveArtifacts artifacts: 'reports/semgrep.*', allowEmptyArchive: true
+        publishHTML(target: [
+          reportDir: 'reports',
+          reportFiles: 'semgrep-summary.html',
+          reportName: 'Semgrep (Résumé)',
+          keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true
+        ])
+        archiveArtifacts artifacts: 'reports/semgrep.*', allowEmptyArchive: true
+      }
+    }
   }
-}
 
   post {
     always {
