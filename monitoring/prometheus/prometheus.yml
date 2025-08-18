@@ -1,14 +1,11 @@
 global:
   scrape_interval: 15s
-  evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: "cadvisor"
+  - job_name: 'prometheus'
     static_configs:
-      - targets: ["cadvisor:8080"]
+      - targets: ['prometheus:9090']
 
-  # (optionnel) si un jour ton app expose /metrics et vit dans le même compose :
-  # - job_name: "demoapp"
-  #   metrics_path: /metrics
-  #   static_configs:
-  #     - targets: ["app:5000"]
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8081']
