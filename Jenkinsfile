@@ -180,16 +180,19 @@ XML
 
     // 4) Dockerfile Lint (Hadolint)
     stage('Dockerfile Lint (Hadolint)') {
-      when { expression { fileExists('Dockerfile') || sh(script: "ls -1 */Dockerfile 2>/dev/null | head -n1 | wc -l", returnStdout: true).trim() != '0' } }
+      when { 
+        expression { 
+          fileExists('Dockerfile') || 
+          sh(script: "find . -type f -name 'Dockerfile*' | head -n1 | wc -l", returnStdout: true).trim() != '0' 
+        } 
+      }
       steps {
         sh '''
           set -eux
           mkdir -p reports
 
           # Lister tous les Dockerfile possibles
-          mapfile -t DFILES < <(ls -1 Dockerfile 2>/dev/null || true)
-          mapfile -t DFILES_GLOB < <(ls -1 */Dockerfile 2>/dev/null || true)
-          DFILES=("${DFILES[@]}" "${DFILES_GLOB[@]}")
+          mapfile -t DFILES < <(find . -type f -name "Dockerfile*")
 
           if [ "${#DFILES[@]}" -eq 0 ]; then
             echo "No Dockerfile found, skipping Hadolint."
@@ -229,7 +232,6 @@ XML
         archiveArtifacts artifacts: 'reports/hadolint-.json, reports/hadolint-.txt', allowEmptyArchive: true
       }
     }
-  }
 
   post {
     always {
