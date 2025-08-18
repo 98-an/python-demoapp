@@ -285,7 +285,7 @@ pipeline {
         archiveArtifacts artifacts: 'presigned-urls.txt,image.txt', allowEmptyArchive: true
       }
     }
-  } // stages
+  } 
 
   post {
     always {
