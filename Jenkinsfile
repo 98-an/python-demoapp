@@ -9,15 +9,15 @@ pipeline {
   }
 
   environment {
-    IMAGE_NAME   = "demoapp:${env.BUILD_NUMBER}"
-    S3_BUCKET    = 'cryptonext-reports-98an'
-    AWS_REGION   = 'eu-north-1'
-    DAST_TARGET  = 'http://13.62.105.249:5000'
+    IMAGE_NAME        = "demoapp:${env.BUILD_NUMBER}"
+    S3_BUCKET         = 'cryptonext-reports-98an'
+    AWS_REGION        = 'eu-north-1'
+    DAST_TARGET       = 'http://13.62.105.249:5000'   // adapte si IP/port changent
 
     // SonarCloud
-    SONAR_HOST_URL   = 'https://sonarcloud.io'
-    SONAR_ORG        = '98-an'
-    SONAR_PROJECT_KEY= '98-an_python-demoapp'
+    SONAR_HOST_URL    = 'https://sonarcloud.io'
+    SONAR_ORG         = '98-an'
+    SONAR_PROJECT_KEY = '98-an_python-demoapp'
   }
 
   stages {
@@ -55,7 +55,7 @@ pipeline {
             pip install pytest flake8 bandit pytest-cov
 
             flake8 || true
-            # tests + coverage (fichier pour SonarCloud)
+            # tests + coverage (pour SonarCloud)
             pytest --maxfail=1 --cov=. --cov-report=xml:coverage.xml --junitxml=pytest-report.xml || true
 
             # rapport HTML Bandit
@@ -83,11 +83,9 @@ pipeline {
       steps {
         sh '''
           set -eux
-          # SARIF
           docker run --rm -v "$PWD":/repo zricethezav/gitleaks:latest \
             detect -s /repo -f sarif -r /repo/reports/gitleaks.sarif || true
 
-          # Résumé HTML simple
           {
             echo '<html><body><h2>Gitleaks (résumé)</h2><pre>'
             grep -o '"ruleId":' reports/gitleaks.sarif | wc -l | xargs echo "Findings:" || true
@@ -159,13 +157,12 @@ pipeline {
       steps {
         sh '''
           set -eux
-          # SARIF
           docker run --rm -v "$PWD":/project aquasec/trivy:latest \
             fs --scanners vuln,secret,config --format sarif -o /project/reports/trivy-fs.sarif /project || true
 
-          # Table -> HTML
           docker run --rm -v "$PWD":/project aquasec/trivy:latest \
             fs --scanners vuln,secret,config -f table /project > reports/trivy-fs.txt || true
+
           { echo '<html><body><h2>Trivy FS</h2><pre>'; cat reports/trivy-fs.txt; echo '</pre></body></html>'; } \
             > reports/trivy-fs.html
         '''
@@ -212,6 +209,22 @@ pipeline {
           reportName: 'ZAP Baseline', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
     }
+
+    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    // NOUVEAU : déploiement de la stack de monitoring via docker-compose
+    stage('Deploy Monitoring (Prometheus/Grafana/cAdvisor)') {
+      when { expression { fileExists('monitoring/docker-compose.yml') } }
+      steps {
+        sh '''
+          set -eux
+          cd monitoring
+          docker compose pull || true
+          docker compose up -d
+          docker compose ps
+        '''
+      }
+    }
+    // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
     stage('Publish reports to S3') {
       when { expression { fileExists('reports') } }
@@ -289,8 +302,7 @@ pipeline {
 
   post {
     always {
-      // Publier tous les rapports générés + logs/jars éventuels
-      archiveArtifacts artifacts: 'reports/, */target/.jar, */.log', allowEmptyArchive: true
+      archiveArtifacts artifacts: 'reports/, /target/.jar, /.log', allowEmptyArchive: true
     }
   }
 }
