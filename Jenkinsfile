@@ -83,10 +83,13 @@ pipeline {
         sh '''
           set -eux
           docker run --rm \
-            -v "$PWD":/repo \
-            -v "$PWD/.git":/repo/.git:ro \
+            -v "$PWD"/repo:/repo \
+            -v "$PWD"/.git:/repo/.git:ro \
             -e GIT_DISCOVERY_ACROSS_FILESYSTEM=1 \
-            zricethezav/gitleaks:latest bash -lc "
+            zricethezav/gitleaks:latest detect \
+            --source /repo \
+            --report-format sarif \
+            --report-path /repo/reports/gitleaks.sarif
               set -eux
               git config --global --add safe.directory /repo || :
               gitleaks detect --source /repo --report-format sarif --report-path /repo/reports/gitleaks.sarif || :
