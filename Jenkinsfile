@@ -15,9 +15,9 @@ pipeline {
         checkout scm
         sh '''
           set -eux
-          # Info checkout + unshallow pour que les outils puissent lire l’historique si nécessaire
-          git remote -v
-          git rev-parse HEAD
+          # Infos et unshallow si besoin
+          git remote -v || true
+          git rev-parse HEAD || true
           git rev-parse --is-shallow-repository && git fetch --unshallow --tags --prune || true
           git config --global --add safe.directory "$PWD"
           rm -rf reports && mkdir -p reports
@@ -35,21 +35,23 @@ pipeline {
         sh '''
           set -eux
 
-          # On fait tout dans un conteneur Python propre
+          # Tout s’exécute dans un conteneur Python propre
           docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim bash -lc '
             set -eux
             python -m pip install --upgrade pip
 
-            # 1) Installer les deps applicatives si un requirements.txt est présent quelque part
-            REQ_FILE="$(python - << '"'"'PY'"'"'
-import os
-skip={".git","reports","_pycache_",".pytest_cache",".venv","node_modules",".github",".vscode","build","ci"}
-for root, dirs, files in os.walk(".", topdown=True):
-    dirs[:]=[d for d in dirs if d not in skip]
-    if "requirements.txt" in files:
-        print(os.path.join(root,"requirements.txt")); break
-PY
-)'
+            # 1) Chercher un requirements.txt (sans heredoc pour éviter les soucis de quoting)
+            REQ_FILE=$(find . -type f -name requirements.txt \
+              -not -path "./.git/*" \
+              -not -path "./reports/*" \
+              -not -path "./_pycache_/*" \
+              -not -path "./.pytest_cache/*" \
+              -not -path "./.venv/*" \
+              -not -path "./node_modules/*" \
+              -not -path "./build/*" \
+              -not -path "./ci/*" \
+              -print -quit || true)
+
             if [ -n "$REQ_FILE" ]; then
               echo "Installing app deps from: $REQ_FILE"
               pip install --prefer-binary -r "$REQ_FILE"
@@ -75,7 +77,7 @@ PY
             bandit -r src -f txt   -o /ws/reports/bandit.txt        || :
             bandit -r src -f sarif -o /ws/reports/bandit.sarif      || :
 
-            # (Optionnel) Afficher un aperçu texte dans la console
+            # (Optionnel) aperçu texte dans la console
             bandit -r src -f txt || :
           '
 
@@ -120,7 +122,7 @@ XML
       }
     }
 
-    // (Les autres stages — Hadolint, Semgrep, Trivy, Sonar, etc. — seront ajoutés ensuite)
+    // On ajoutera les autres stages (Semgrep, Hadolint, Trivy, Sonar…) après validation de celui-ci.
   }
 
   post {
