@@ -2,16 +2,23 @@ pipeline {
   agent any
 
   options {
+    skipDefaultCheckout(true)
     timestamps()
-    ansiColor('xterm')
+    disableConcurrentBuilds()
     timeout(time: 25, unit: 'MINUTES')
   }
 
   environment {
-    // Nom du job et dossier de rapports
-    JOB_NAME_SAFE = "${env.JOB_NAME}"
-    REPORT_DIR    = "reports"
-  }
+    IMAGE_NAME        = "demoapp:${env.BUILD_NUMBER}"
+    S3_BUCKET         = 'cryptonext-reports-98an'
+    AWS_REGION        = 'eu-north-1'
+    DAST_TARGET       = 'http://16.170.87.165/:5000'
+
+    // SonarCloud
+    SONAR_HOST_URL    = 'https://sonarcloud.io'
+    SONAR_ORG         = '98-an'
+    SONAR_PROJECT_KEY = '98-an_python-demoapp'
+  }
 
   stages {
 
