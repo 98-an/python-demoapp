@@ -108,35 +108,21 @@ pipeline {
     withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
       sh '''
         set -eux
-
-        # On lance le scanner dans un conteneur et on MONTE .git pour le SCM
         docker run --rm \
           -e SONAR_HOST_URL="https://sonarcloud.io" \
           -e SONAR_TOKEN="$SONAR_TOKEN" \
           -v "$PWD":/usr/src \
           -v "$PWD/.git":/usr/src/.git:ro \
-          --entrypoint bash sonarsource/sonar-scanner-cli:latest -lc '
-
-            set -eux
-            # Autoriser /usr/src comme safe.directory pour git
-            git config --global --add safe.directory /usr/src || true
-
-            ARGS="-Dsonar.organization=98-an \
-                  -Dsonar.projectKey=98-an_python-demoapp \
-                  -Dsonar.projectBaseDir=/usr/src \
-                  -Dsonar.sources=. \
-                  -Dsonar.scm.provider=git \
-                  -Dsonar.python.version=3.11 \
-                  -Dsonar.exclusions=reports/,.venv/,.pytest_cache/,pycache/,node_modules/"
-
-            # Déclarer tests UNIQUEMENT si le dossier existe (sinon SonarCloud échoue)
-            [ -d tests ] && ARGS="$ARGS -Dsonar.tests=tests"
-
-            # Ajouter la couverture uniquement si le fichier est là
-            [ -f reports/coverage.xml ] && ARGS="$ARGS -Dsonar.python.coverage.reportPaths=reports/coverage.xml"
-
-            sonar-scanner $ARGS
-          '
+          sonarsource/sonar-scanner-cli:latest \
+          sonar-scanner \
+            -Dsonar.organization=98-an \
+            -Dsonar.projectKey=98-an_python-demoapp \
+            -Dsonar.projectBaseDir=/usr/src \
+            -Dsonar.sources=. \
+            -Dsonar.scm.provider=git \
+            -Dsonar.python.version=3.11 \
+            -Dsonar.exclusions=reports/,.venv/,.pytest_cache/,_pycache_/,node_modules/** \
+            -Dsonar.working.directory=/tmp/.scannerwork
       '''
     }
   }
