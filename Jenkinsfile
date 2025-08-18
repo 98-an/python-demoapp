@@ -9,10 +9,10 @@ pipeline {
   }
 
   environment {
-    IMAGE_NAME   = "demoapp:${env.BUILD_NUMBER}"13
+    IMAGE_NAME   = "demoapp:${env.BUILD_NUMBER}"
     S3_BUCKET    = 'cryptonext-reports-98an'
     AWS_REGION   = 'eu-north-1'
-    DAST_TARGET  = 'http://16.170.87.165/:5000'
+    DAST_TARGET  = 'http://16.170.87.165:5000'
 
     // SonarCloud
     SONAR_HOST_URL   = 'https://sonarcloud.io'
@@ -87,9 +87,9 @@ pipeline {
           docker run --rm -v "$PWD":/repo zricethezav/gitleaks:latest \
             detect -s /repo -f sarif -r /repo/reports/gitleaks.sarif || true
 
-          # Résumé HTML simple
+          # RÃ©sumÃ© HTML simple
           {
-            echo '<html><body><h2>Gitleaks (résumé)</h2><pre>'
+            echo '<html><body><h2>Gitleaks (rÃ©sumÃ©)</h2><pre>'
             grep -o '"ruleId":' reports/gitleaks.sarif | wc -l | xargs echo "Findings:" || true
             echo '</pre></body></html>'
           } > reports/gitleaks.html
@@ -108,7 +108,7 @@ pipeline {
             semgrep --config p/ci --sarif --output /src/reports/semgrep.sarif --error --timeout 0 || true
 
           {
-            echo '<html><body><h2>Semgrep (résumé)</h2><pre>'
+            echo '<html><body><h2>Semgrep (rÃ©sumÃ©)</h2><pre>'
             grep -o '"ruleId":' reports/semgrep.sarif | wc -l | xargs echo "Findings:" || true
             echo '</pre></body></html>'
           } > reports/semgrep.html
@@ -142,7 +142,7 @@ pipeline {
       }
     }
 
-    stage('Build Image (si Dockerfile présent)') {
+    stage('Build Image (si Dockerfile prÃ©sent)') {
       when { expression { fileExists('Dockerfile') || fileExists('container/Dockerfile') } }
       steps {
         sh '''
@@ -222,7 +222,7 @@ pipeline {
           sh '''
             set -eux
             if [ -z "$(ls -A reports || true)" ]; then
-              echo "Aucun rapport à publier, on saute."
+              echo "Aucun rapport Ã  publier, on saute."
               exit 0
             fi
             DEST="s3://${S3_BUCKET}/${JOB_NAME}/${BUILD_NUMBER}/"
@@ -285,11 +285,11 @@ pipeline {
         archiveArtifacts artifacts: 'presigned-urls.txt,image.txt', allowEmptyArchive: true
       }
     }
-  } 
+  } // stages
 
   post {
     always {
-      // Publier tous les rapports générés + logs/jars éventuels
+      // Publier tous les rapports gÃ©nÃ©rÃ©s + logs/jars Ã©ventuels
       archiveArtifacts artifacts: 'reports/, */target/.jar, */.log', allowEmptyArchive: true
     }
   }
