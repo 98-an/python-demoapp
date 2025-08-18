@@ -29,85 +29,84 @@ pipeline {
     }
 
     stage('Python Lint & Tests & Bandit') {
-      when { expression { fileExists('src') || fileExists('requirements.txt') || fileExists('pyproject.toml') } }
-      steps {
-        sh '''
-          set -eux
-          docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim bash -lc "
-            set -eux
-            python -m pip install --upgrade pip
+  when { expression { fileExists('src') || fileExists('requirements.txt') || fileExists('pyproject.toml') } }
+  steps {
+    sh '''
+      set -eux
+      docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim bash -lc "
+        set -eux
+        python -m pip install --upgrade pip
 
-            REQ_FILE=$(find . -type f -name requirements.txt \
-              -not -path './.git/*' \
-              -not -path './reports/*' \
-              -not -path './pycache/*' \
-              -not -path './.pytest_cache/*' \
-              -not -path './.venv/*' \
-              -not -path './node_modules/*' \
-              -not -path './build/*' \
-              -not -path './ci/*' \
-              -print -quit || true)
+        REQ_FILE=$(find . -type f -name requirements.txt \
+          -not -path './.git/*' \
+          -not -path './reports/*' \
+          -not -path './pycache/*' \
+          -not -path './.pytest_cache/*' \
+          -not -path './.venv/*' \
+          -not -path './node_modules/*' \
+          -not -path './build/*' \
+          -not -path './ci/*' \
+          -print -quit || true)
 
-            if [ -n '$REQ_FILE' ]; then
-              echo 'Installing app deps from: $REQ_FILE'
-              pip install --prefer-binary -r '$REQ_FILE'
-            else
-              echo 'No requirements.txt found — skipping app deps install.'
-            fi
+        if [ -n "$REQ_FILE" ]; then
+          echo 'Installing app deps from: '$REQ_FILE''
+          pip install --prefer-binary -r "$REQ_FILE"
+        else
+          echo 'No requirements.txt found — skipping app deps install.'
+        fi
 
-            pip install --prefer-binary pytest pytest-cov flake8 bandit pyyaml
+        pip install --prefer-binary pytest pytest-cov flake8 bandit pyyaml
 
-            flake8 || :
+        flake8 || :
 
-            pytest --maxfail=1 \
-              --cov=. \
-              --cov-report=xml:/ws/reports/coverage.xml \
-              --junitxml=/ws/reports/pytest-report.xml || :
+        pytest --maxfail=1 \
+          --cov=. \
+          --cov-report=xml:/ws/reports/coverage.xml \
+          --junitxml=/ws/reports/pytest-report.xml || :
 
-            mkdir -p /ws/reports
-            bandit -r src -f html  -o /ws/reports/bandit-report.html || :
-            bandit -r src -f txt   -o /ws/reports/bandit.txt        || :
-            bandit -r src -f sarif -o /ws/reports/bandit.sarif      || :
-            bandit -r src -f txt || :
-          "
+        mkdir -p /ws/reports
+        bandit -r src -f html  -o /ws/reports/bandit-report.html || :
+        bandit -r src -f txt   -o /ws/reports/bandit.txt        || :
+        bandit -r src -f sarif -o /ws/reports/bandit.sarif      || :
+        bandit -r src -f txt || :
+      "
 
-          if [ ! -s reports/pytest-report.xml ] || ! grep -q "<testcase" reports/pytest-report.xml; then
-            cat > reports/pytest-report.xml <<'XML'
+      if [ ! -s reports/pytest-report.xml ] || ! grep -q "<testcase" reports/pytest-report.xml; then
+        cat > reports/pytest-report.xml <<'XML'
 <testsuite name="fallback" tests="1" failures="0" errors="0" skipped="0">
   <testcase classname="smoke" name="no_tests_found"/>
 </testsuite>
 XML
-          fi
+      fi
 
-          COUNT=$(grep -o '"ruleId":' reports/bandit.sarif 2>/dev/null | wc -l || echo 0)
-          {
-            echo "<html><body><h2>Bandit (résumé)</h2><pre>"
-            echo "Findings: ${COUNT}"
-            echo "</pre><p><a href=\\"bandit-report.html\\">➡ Rapport HTML détaillé</a></p>"
-            echo "</body></html>"
-          } > reports/bandit-summary.html
-        '''
+      COUNT=$(grep -o '"ruleId":' reports/bandit.sarif 2>/dev/null | wc -l || echo 0)
+      {
+        echo "<html><body><h2>Bandit (résumé)</h2><pre>"
+        echo "Findings: ${COUNT}"
+        echo "</pre><p><a href=\\"bandit-report.html\\">➡ Rapport HTML détaillé</a></p>"
+        echo "</body></html>"
+      } > reports/bandit-summary.html
+    '''
 
-        junit allowEmptyResults: true, testResults: 'reports/pytest-report.xml'
+    junit allowEmptyResults: true, testResults: 'reports/pytest-report.xml'
 
-        publishHTML(target: [
-          reportDir: 'reports',
-          reportFiles: 'bandit-report.html',
-          reportName: 'Bandit - Python SAST',
-          keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true
-        ])
+    publishHTML(target: [
+      reportDir: 'reports',
+      reportFiles: 'bandit-report.html',
+      reportName: 'Bandit - Python SAST',
+      keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true
+    ])
 
-        publishHTML(target: [
-          reportDir: 'reports',
-          reportFiles: 'bandit-summary.html',
-          reportName: 'Bandit (Résumé)',
-          keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true
-        ])
+    publishHTML(target: [
+      reportDir: 'reports',
+      reportFiles: 'bandit-summary.html',
+      reportName: 'Bandit (Résumé)',
+      keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true
+    ])
 
-        archiveArtifacts artifacts: 'reports/bandit.*, reports/coverage.xml, reports/pytest-report.xml', allowEmptyArchive: true
-      }
-    }
-
+    archiveArtifacts artifacts: 'reports/bandit.*, reports/coverage.xml, reports/pytest-report.xml', allowEmptyArchive: true
+  }
+}
     stage('Semgrep SAST') {
       steps {
         sh '''
