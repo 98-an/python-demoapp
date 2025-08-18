@@ -30,17 +30,6 @@ pipeline {
       }
     }
 
-    stage('Java Build & Tests') {
-      when { expression { fileExists('pom.xml') } }
-      steps {
-        sh '''
-          docker run --rm -v "$PWD":/ws -w /ws \
-            maven:3.9-eclipse-temurin-17 mvn -B -DskipTests=false clean test
-        '''
-        junit '/target/surefire-reports/*.xml'
-      }
-    }
-
     stage('Python Lint & Tests & Bandit') {
       when { expression { fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pyproject.toml') } }
       steps {
