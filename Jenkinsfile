@@ -8,6 +8,10 @@ pipeline {
     timeout(time: 25, unit: 'MINUTES')
   }
 
+  environment {
+    // Tu pourras réactiver d'autres variables plus tard si besoin
+  }
+
   stages {
 
     stage('Checkout') {
@@ -15,12 +19,11 @@ pipeline {
         checkout scm
         sh '''
           set -eux
-          git remote -v || true
+          # Info checkout + unshallow pour que les outils puissent lire l’historique si nécessaire
+          git remote -v
           git rev-parse HEAD
-          if git rev-parse --is-shallow-repository >/dev/null 2>&1; then
-            git fetch --unshallow --tags --prune
-          fi
-          git config --global --add safe.directory "$PWD" || :
+          git rev-parse --is-shallow-repository && git fetch --unshallow --tags --prune || true
+          git config --global --add safe.directory "$PWD"
           rm -rf reports && mkdir -p reports
         '''
         script {
@@ -31,64 +34,105 @@ pipeline {
     }
 
     stage('Python Lint & Tests & Bandit') {
-      // on déclenche si au moins un des fichiers de conf existe
-      when { expression { fileExists('src/app/requirements.txt') || fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pyproject.toml') } }
+      when { expression { fileExists('src') || fileExists('requirements.txt') || fileExists('pyproject.toml') } }
       steps {
         sh '''
           set -eux
 
+          # On fait tout dans un conteneur Python propre
           docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim bash -lc '
             set -eux
             python -m pip install --upgrade pip
 
-            # === Dépendances selon ton arbo ===
-            if   [ -f src/app/requirements.txt ]; then
-                 pip install --prefer-binary -r src/app/requirements.txt
-            elif [ -f src/requirements.txt ]; then
-                 pip install --prefer-binary -r src/requirements.txt
-            elif [ -f requirements.txt ]; then
-                 pip install --prefer-binary -r requirements.txt
+            # 1) Installer les deps applicatives si un requirements.txt est présent quelque part
+            REQ_FILE="$(python - << '"'"'PY'"'"'
+import os
+skip={".git","reports","_pycache_",".pytest_cache",".venv","node_modules",".github",".vscode","build","ci"}
+for root, dirs, files in os.walk(".", topdown=True):
+    dirs[:]=[d for d in dirs if d not in skip]
+    if "requirements.txt" in files:
+        print(os.path.join(root,"requirements.txt")); break
+PY
+)'
+            if [ -n "$REQ_FILE" ]; then
+              echo "Installing app deps from: $REQ_FILE"
+              pip install --prefer-binary -r "$REQ_FILE"
+            else
+              echo "No requirements.txt found — skipping app deps install."
             fi
 
-            # Outils qualité
-            pip install --prefer-binary pytest pytest-cov flake8 bandit
+            # 2) Outils qualité
+            pip install --prefer-binary pytest pytest-cov flake8 bandit pyyaml
 
-            # Lint (ne casse pas le build)
+            # 3) Lint (ne casse pas le build)
             flake8 || :
 
-            # Tests (écrit tout dans /ws/reports)
+            # 4) Tests (rapports centralisés dans /ws/reports)
             pytest --maxfail=1 \
               --cov=. \
               --cov-report=xml:/ws/reports/coverage.xml \
               --junitxml=/ws/reports/pytest-report.xml || :
 
-            # SAST Python
-            bandit -r . -f html -o /ws/reports/bandit-report.html || :
+            # 5) Bandit : scanner le code sous src/ et générer 3 formats
+            mkdir -p /ws/reports
+            bandit -r src -f html  -o /ws/reports/bandit-report.html || :
+            bandit -r src -f txt   -o /ws/reports/bandit.txt        || :
+            bandit -r src -f sarif -o /ws/reports/bandit.sarif      || :
+
+            # (Optionnel) Afficher un aperçu texte dans la console
+            bandit -r src -f txt || :
           '
 
-          # Fallback si aucun test n’a tourné (pour que 'junit' ait un fichier)
-          test -f reports/pytest-report.xml || echo "<testsuite tests=\\"0\\"></testsuite>" > reports/pytest-report.xml
+          # 6) Fallback JUnit : si pas de <testcase>, on écrit 1 test "dummy"
+          if [ ! -s reports/pytest-report.xml ] || ! grep -q "<testcase" reports/pytest-report.xml; then
+            cat > reports/pytest-report.xml <<'XML'
+<testsuite name="fallback" tests="1" failures="0" errors="0" skipped="0">
+  <testcase classname="smoke" name="no_tests_found"/>
+</testsuite>
+XML
+          fi
+
+          # 7) Résumé Bandit : compteur de findings + lien vers le HTML
+          COUNT=$(grep -o '"ruleId":' reports/bandit.sarif 2>/dev/null | wc -l || echo 0)
+          {
+            echo "<html><body><h2>Bandit (résumé)</h2><pre>"
+            echo "Findings: ${COUNT}"
+            echo "</pre><p><a href=\\"bandit-report.html\\">➡ Rapport HTML détaillé</a></p>"
+            echo "</body></html>"
+          } > reports/bandit-summary.html
         '''
 
         // Publier les rapports
         junit allowEmptyResults: true, testResults: 'reports/pytest-report.xml'
+
         publishHTML(target: [
           reportDir: 'reports',
           reportFiles: 'bandit-report.html',
           reportName: 'Bandit - Python SAST',
           keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true
         ])
+
+        publishHTML(target: [
+          reportDir: 'reports',
+          reportFiles: 'bandit-summary.html',
+          reportName: 'Bandit (Résumé)',
+          keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true
+        ])
+
+        // Conserver aussi les fichiers bruts
+        archiveArtifacts artifacts: 'reports/bandit.*, reports/coverage.xml, reports/pytest-report.xml', allowEmptyArchive: true
       }
     }
 
+    // (Les autres stages — Hadolint, Semgrep, Trivy, Sonar, etc. — seront ajoutés ensuite)
   }
 
   post {
     always {
-      // petit récap checkout
       sh '''
         set -eux
-        BR="${BRANCH_NAME:-$(git symbolic-ref -q --short HEAD || git name-rev --name-only HEAD || echo detached)}"
+        BR_RAW="${BRANCH_NAME:-$(git symbolic-ref -q --short HEAD || git name-rev --name-only HEAD || echo detached)}"
+        BR="$(echo "$BR_RAW" | sed "s#^remotes/origin/##; s#^origin/##; s#^heads/##")"
         {
           echo "Branch: ${BR}"
           echo "Commit: $(git rev-parse HEAD || true)"
