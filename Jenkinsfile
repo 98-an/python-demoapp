@@ -205,44 +205,7 @@ pipeline {
           reportName: 'ZAP Baseline', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
     }
-
-    // --------------------- MONITORING ---------------------
-    stage('Deploy Monitoring (Prometheus/Grafana/cAdvisor)') {
-      steps {
-        sh '''
-          set -eux
-          # Chemin du compose
-          test -f monitoring/docker-compose.yml || test -f monitoring/docker-compose.yaml
-
-          # Image Compose v1 (stable)
-          COMPOSE_IMG="docker/compose:1.29.2"
-
-          # Si Jenkins tourne DANS Docker, on réutilise son volume pour voir /var/jenkins_home
-          JENKINS_CTN=$(docker ps --filter "ancestor=jenkins/jenkins" --format "{{.ID}}" | head -n1 || true)
-          if [ -n "$JENKINS_CTN" ]; then
-            VFROM="--volumes-from $JENKINS_CTN"
-            BASE="/var/jenkins_home/workspace/${JOB_NAME}/monitoring"
-          else
-            VFROM=""
-            BASE="${WORKSPACE}/monitoring"
-          fi
-
-          # Vérif
-          docker run --rm $VFROM -v /var/run/docker.sock:/var/run/docker.sock \
-            -w "$BASE" -e COMPOSE_PROJECT_NAME=monitoring "$COMPOSE_IMG" config -q
-
-          # Démarrage
-          docker run --rm $VFROM -v /var/run/docker.sock:/var/run/docker.sock \
-            -w "$BASE" -e COMPOSE_PROJECT_NAME=monitoring "$COMPOSE_IMG" up -d --remove-orphans
-
-          # Etat
-          docker run --rm $VFROM -v /var/run/docker.sock:/var/run/docker.sock \
-            -w "$BASE" -e COMPOSE_PROJECT_NAME=monitoring "$COMPOSE_IMG" ps
-        '''
-      }
-    }
-    // -----------------------------------------------------
-
+    
     stage('Publish reports to S3') {
       when { expression { fileExists('reports') } }
       steps {
