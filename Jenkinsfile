@@ -104,31 +104,49 @@ pipeline {
     }
 
     stage('SonarCloud') {
-      steps {
-        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-          sh '''
+  steps {
+    withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+      sh '''
+        set -eux
+
+        # Evite les problèmes de droits résiduels
+        rm -rf .scannerwork || true
+
+        # Lance le scanner dans un conteneur et MONTE .git
+        docker run --rm \
+          -e SONAR_HOST_URL="https://sonarcloud.io" \
+          -e SONAR_TOKEN="$SONAR_TOKEN" \
+          -v "$PWD":/usr/src \
+          -v "$PWD/.git":/usr/src/.git:ro \
+          --entrypoint bash sonarsource/sonar-scanner-cli:latest -lc '
             set -eux
-             docker run --rm \
-               -e SONAR_HOST_URL="$SONAR_HOST_URL" \
-               -e SONAR_TOKEN="$SONAR_TOKEN" \
-               -v "$PWD":/usr/src \
-               -v "$PWD/.git":/usr/src/.git:ro \
-               sonarsource/sonar-scanner-cli:latest \
-                 -Dsonar.organization="$SONAR_ORG" \
-                 -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
-                 -Dsonar.projectName="$SONAR_PROJECT_KEY" \
-                 -Dsonar.projectBaseDir=/usr/src \
-                 -Dsonar.sources="src,app" \
-                 -Dsonar.tests="tests" \
-                 -Dsonar.exclusions="/tests/postman_collection.json,/pycache/,/.pytest_cache/" \
-                 -Dsonar.scm.provider=git \
-                 -Dsonar.python.version=3.11 \
-                 -Dsonar.python.coverage.reportPaths=reports/coverage.xml \
-                 -Dsonar.scanner.skipJreProvisioning=true || :
-          '''
-        }
-      }
+            git config --global --add safe.directory /usr/src || true
+
+            # Choisit des sources valides : "src,app" si l'un existe, sinon "."
+            SRC="."
+            [ -d src ] && SRC="src"
+            [ -d app ] && SRC="${SRC},app"
+
+            ARGS="-Dsonar.organization=98-an \
+                  -Dsonar.projectKey=98-an_python-demoapp \
+                  -Dsonar.projectBaseDir=/usr/src \
+                  -Dsonar.sources=${SRC} \
+                  -Dsonar.scm.provider=git \
+                  -Dsonar.python.version=3.11 \
+                  -Dsonar.exclusions=reports/,.venv/,.pytest_cache/,_pycache_/,node_modules/"
+
+            # Ajoute les tests seulement si le dossier existe
+            [ -d tests ] && ARGS="$ARGS -Dsonar.tests=tests"
+
+            # Ajoute la couverture seulement si le fichier existe
+            [ -f reports/coverage.xml ] && ARGS="$ARGS -Dsonar.python.coverage.reportPaths=reports/coverage.xml"
+
+            sonar-scanner $ARGS
+          '
+      '''
     }
+  }
+}
 
     stage('Build Image (si Dockerfile présent)') {
       when { expression { fileExists('Dockerfile') || fileExists('container/Dockerfile') } }
