@@ -8,10 +8,6 @@ pipeline {
     timeout(time: 25, unit: 'MINUTES')
   }
 
-  environment {
-    // Tu pourras réactiver d'autres variables plus tard si besoin
-  }
-
   stages {
 
     stage('Checkout') {
