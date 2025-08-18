@@ -9,15 +9,23 @@ pipeline {
   }
 
   environment {
-    IMAGE_NAME        = "demoapp:${env.BUILD_NUMBER}"
-    S3_BUCKET         = 'cryptonext-reports-98an'
-    AWS_REGION        = 'eu-north-1'
-    DAST_TARGET       = 'http://13.62.105.249:5000'   // adapte si IP/port changent
+    // --- Build / Image
+    IMAGE_NAME         = "demoapp:${env.BUILD_NUMBER}"
 
-    // SonarCloud
-    SONAR_HOST_URL    = 'https://sonarcloud.io'
-    SONAR_ORG         = '98-an'
-    SONAR_PROJECT_KEY = '98-an_python-demoapp'
+    // --- S3 (rapports)
+    S3_BUCKET          = 'cryptonext-reports-98an'
+    AWS_REGION         = 'eu-north-1'
+
+    // --- DAST (URL de ton appli)
+    DAST_TARGET        = 'http://13.62.105.249:5000'
+
+    // --- SonarCloud
+    SONAR_HOST_URL     = 'https://sonarcloud.io'
+    SONAR_ORG          = '98-an'
+    SONAR_PROJECT_KEY  = '98-an_python-demoapp'
+
+    // --- Docker Compose (nom logique du projet monitoring)
+    COMPOSE_PROJECT_NAME = 'monitoring'
   }
 
   stages {
@@ -37,7 +45,7 @@ pipeline {
           docker run --rm -v "$PWD":/ws -w /ws \
             maven:3.9-eclipse-temurin-17 mvn -B -DskipTests=false clean test
         '''
-        junit '/target/surefire-reports/*.xml'
+        junit 'target/surefire-reports/*.xml'
       }
     }
 
@@ -55,7 +63,7 @@ pipeline {
             pip install pytest flake8 bandit pytest-cov
 
             flake8 || true
-            # tests + coverage (pour SonarCloud)
+            # tests + coverage pour SonarCloud
             pytest --maxfail=1 --cov=. --cov-report=xml:coverage.xml --junitxml=pytest-report.xml || true
 
             # rapport HTML Bandit
@@ -210,53 +218,6 @@ pipeline {
       }
     }
 
-    // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    // NOUVEAU : déploiement de la stack de monitoring via docker-compose
-    stage('Deploy Monitoring (Prometheus/Grafana/cAdvisor)') {
-      when { expression { fileExists('monitoring/docker-compose.yml') } }
-      steps {
-        sh '''
-          set -eux
-          set -eux
-          cd monitoring
-
-          COMPOSE_IMG="docker/compose:2.27.0"
-
-          # Vérifier la conf Compose
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$PWD":/work -w /work \
-            -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-monitoring}" \
-            "$COMPOSE_IMG" config -q
-
-          # Stopper/retirer le stack existant (évite les conflits de ports)
-          docker run --rm \
-           -v /var/run/docker.sock:/var/run/docker.sock \
-           -v "$PWD":/work -w /work \
-           -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-monitoring}" \
-           "$COMPOSE_IMG" down --remove-orphans || true
-
-      # Démarrer
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$PWD":/work -w /work \
-            -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-monitoring}" \
-            "$COMPOSE_IMG" up -d
-
-      # Afficher l’état
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$PWD":/work -w /work \
-            -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-monitoring}" \
-            "$COMPOSE_IMG" ps
-
-      # Petit résumé côté Docker
-          docker ps --format "table {{.Names}}\\t{{.Ports}}\\t{{.Status}}" | egrep -i 'grafana|prometheus|cadvisor' || true
-        '''
-      }
-    }
-    // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-
     stage('Publish reports to S3') {
       when { expression { fileExists('reports') } }
       steps {
@@ -276,6 +237,7 @@ pipeline {
               -e AWS_DEFAULT_REGION="${AWS_REGION}" \
               -v "$PWD/reports:/reports" amazon/aws-cli \
               s3 cp /reports "${DEST}" --recursive --sse AES256
+
             [ -f image.txt ] && docker run --rm \
               -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
               -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
@@ -329,11 +291,44 @@ pipeline {
         archiveArtifacts artifacts: 'presigned-urls.txt,image.txt', allowEmptyArchive: true
       }
     }
+
+    stage('Deploy Monitoring (Prometheus/Grafana/cAdvisor)') {
+      when { expression { fileExists('monitoring/docker-compose.yml') } }
+      steps {
+        sh '''
+          set -eux
+          cd monitoring
+
+          # Essaye d'abord Compose v2 (GHCR), sinon fallback v1 (Docker Hub)
+          COMPOSE_IMG="ghcr.io/docker/compose:2.27.0"
+          docker pull "$COMPOSE_IMG" || COMPOSE_IMG="docker/compose:1.29.2"
+
+          # Vérifier / valider
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/work -w /work \
+            -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" "$COMPOSE_IMG" version
+
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/work -w /work \
+            -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" "$COMPOSE_IMG" config -q
+
+          # Redémarrage propre
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/work -w /work \
+            -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" "$COMPOSE_IMG" down --remove-orphans || true
+
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD":/work -w /work \
+            -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME}" "$COMPOSE_IMG" up -d
+
+          # État lisible
+          docker ps --format "table {{.Names}}\\t{{.Ports}}\\t{{.Status}}" \
+            | egrep -i "grafana|prometheus|cadvisor" || true
+        '''
+      }
+    }
+
   } // stages
 
   post {
     always {
-      archiveArtifacts artifacts: 'reports/, /target/.jar, /.log', allowEmptyArchive: true
+      archiveArtifacts artifacts: 'reports/, /target/.jar, *.log', allowEmptyArchive: true
     }
   }
 }
