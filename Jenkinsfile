@@ -217,29 +217,41 @@ pipeline {
       steps {
         sh '''
           set -eux
-          # On travaille dans le dossier monitoring de ton repo
+          set -eux
           cd monitoring
 
-          # Utilise Compose via l’image officielle docker/compose (v2)
           COMPOSE_IMG="docker/compose:2.27.0"
 
-          # pull (facultatif, on ignore les erreurs de rate limit)
+          # Vérifier la conf Compose
           docker run --rm \
-          -v /var/run/docker.sock:/var/run/docker.sock \
-          -v "$PWD":/work -w /work "$COMPOSE_IMG" \
-          pull || true
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/work -w /work \
+            -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-monitoring}" \
+            "$COMPOSE_IMG" config -q
 
-          # up -d
+          # Stopper/retirer le stack existant (évite les conflits de ports)
           docker run --rm \
-          -v /var/run/docker.sock:/var/run/docker.sock \
-          -v "$PWD":/work -w /work "$COMPOSE_IMG" \
-          up -d --remove-orphans
+           -v /var/run/docker.sock:/var/run/docker.sock \
+           -v "$PWD":/work -w /work \
+           -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-monitoring}" \
+           "$COMPOSE_IMG" down --remove-orphans || true
 
-          # ps (affichage d’état)
+      # Démarrer
           docker run --rm \
-          -v /var/run/docker.sock:/var/run/docker.sock \
-          -v "$PWD":/work -w /work "$COMPOSE_IMG" \
-          ps
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/work -w /work \
+            -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-monitoring}" \
+            "$COMPOSE_IMG" up -d
+
+      # Afficher l’état
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/work -w /work \
+            -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-monitoring}" \
+            "$COMPOSE_IMG" ps
+
+      # Petit résumé côté Docker
+          docker ps --format "table {{.Names}}\\t{{.Ports}}\\t{{.Status}}" | egrep -i 'grafana|prometheus|cadvisor' || true
         '''
       }
     }
