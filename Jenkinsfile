@@ -7,7 +7,7 @@ pipeline {
     disableConcurrentBuilds()
     timeout(time: 25, unit: 'MINUTES')
   }
-1
+
   environment {
     IMAGE_NAME   = "demoapp:${env.BUILD_NUMBER}"13
     S3_BUCKET    = 'cryptonext-reports-98an'
