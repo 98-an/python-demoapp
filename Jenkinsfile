@@ -108,19 +108,23 @@ pipeline {
         withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
           sh '''
             set -eux
-            docker run --rm \
-              -e SONAR_HOST_URL="$SONAR_HOST_URL" \
-              -e SONAR_TOKEN="$SONAR_TOKEN" \
-              -v "$PWD":/usr/src \
-              sonarsource/sonar-scanner-cli:latest \
-                -Dsonar.organization="$SONAR_ORG" \
-                -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
-                -Dsonar.projectName="$SONAR_PROJECT_KEY" \
-                -Dsonar.sources="." \
-                -Dsonar.scm.provider=git \
-                -Dsonar.python.version=3.11 \
-                -Dsonar.python.coverage.reportPaths=coverage.xml \
-                -Dsonar.scanner.skipJreProvisioning=true || true
+             docker run --rm \
+               -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+               -e SONAR_TOKEN="$SONAR_TOKEN" \
+               -v "$PWD":/usr/src \
+               -v "$PWD/.git":/usr/src/.git:ro \
+               sonarsource/sonar-scanner-cli:latest \
+                 -Dsonar.organization="$SONAR_ORG" \
+                 -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+                 -Dsonar.projectName="$SONAR_PROJECT_KEY" \
+                 -Dsonar.projectBaseDir=/usr/src \
+                 -Dsonar.sources="src,app" \
+                 -Dsonar.tests="tests" \
+                 -Dsonar.exclusions="/tests/postman_collection.json,/pycache/,/.pytest_cache/" \
+                 -Dsonar.scm.provider=git \
+                 -Dsonar.python.version=3.11 \
+                 -Dsonar.python.coverage.reportPaths=reports/coverage.xml \
+                 -Dsonar.scanner.skipJreProvisioning=true || :
           '''
         }
       }
