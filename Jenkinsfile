@@ -217,10 +217,29 @@ pipeline {
       steps {
         sh '''
           set -eux
+          # On travaille dans le dossier monitoring de ton repo
           cd monitoring
-          docker compose pull || true
-          docker compose up -d --remove-orphans
-          docker compose ps
+
+          # Utilise Compose via l’image officielle docker/compose (v2)
+          COMPOSE_IMG="docker/compose:2.27.0"
+
+          # pull (facultatif, on ignore les erreurs de rate limit)
+          docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          -v "$PWD":/work -w /work "$COMPOSE_IMG" \
+          pull || true
+
+          # up -d
+          docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          -v "$PWD":/work -w /work "$COMPOSE_IMG" \
+          up -d --remove-orphans
+
+          # ps (affichage d’état)
+          docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          -v "$PWD":/work -w /work "$COMPOSE_IMG" \
+          ps
         '''
       }
     }
