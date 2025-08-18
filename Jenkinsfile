@@ -195,7 +195,7 @@ pipeline {
       }
     }
     
-    stage('Publish reports to S3') {
+ /* -----   stage('Publish reports to S3') {
       when { expression { fileExists('reports') } }
       steps {
         withCredentials([usernamePassword(credentialsId: 'aws-up',
@@ -267,7 +267,8 @@ pipeline {
         archiveArtifacts artifacts: 'presigned-urls.txt,image.txt', allowEmptyArchive: true
       }
     }
-  }
+    */
+  } 
 
   post {
     always {
