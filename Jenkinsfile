@@ -217,12 +217,10 @@ pipeline {
       steps {
         sh '''
           set -eux
-          docker compose -f monitoring/docker-compose.yml pull
-          docker compose -f monitoring/docker-compose.yml up -d --remove-orphans
-          docker compose -f monitoring/docker-compose.yml ps
-    '''
-  }
-}
+          cd monitoring
+          docker compose pull || true
+          docker compose up -d --remove-orphans
+          docker compose ps
         '''
       }
     }
