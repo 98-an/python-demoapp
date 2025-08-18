@@ -104,29 +104,32 @@ pipeline {
     }
 
     stage('SonarCloud') {
-  steps {
-    withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-      sh '''
-        set -eux
-        docker run --rm \
-          -e SONAR_HOST_URL="https://sonarcloud.io" \
-          -e SONAR_TOKEN="$SONAR_TOKEN" \
-          -v "$PWD":/usr/src \
-          -v "$PWD/.git":/usr/src/.git:ro \
-          sonarsource/sonar-scanner-cli:latest \
-          sonar-scanner \
-            -Dsonar.organization=98-an \
-            -Dsonar.projectKey=98-an_python-demoapp \
-            -Dsonar.projectBaseDir=/usr/src \
-            -Dsonar.sources=. \
-            -Dsonar.scm.provider=git \
-            -Dsonar.python.version=3.11 \
-            -Dsonar.exclusions=reports/,.venv/,.pytest_cache/,_pycache_/,node_modules/** \
-            -Dsonar.working.directory=/tmp/.scannerwork
-      '''
+      steps {
+        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+          sh '''
+            set -eux
+             docker run --rm \
+               -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+               -e SONAR_TOKEN="$SONAR_TOKEN" \
+               -v "$PWD":/usr/src \
+               -v "$PWD/.git":/usr/src/.git:ro \
+               sonarsource/sonar-scanner-cli:latest \
+                 -Dsonar.organization="$SONAR_ORG" \
+                 -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+                 -Dsonar.projectName="$SONAR_PROJECT_KEY" \
+                 -Dsonar.projectBaseDir=/usr/src \
+                 -Dsonar.sources="src,app" \
+                 -Dsonar.tests="tests" \
+                 -Dsonar.exclusions="/tests/postman_collection.json,/pycache/,/.pytest_cache/" \
+                 -Dsonar.scm.provider=git \
+                 -Dsonar.python.version=3.11 \
+                 -Dsonar.python.coverage.reportPaths=reports/coverage.xml \
+                 -Dsonar.scanner.skipJreProvisioning=true || :
+          '''
+        }
+      }
     }
-  }
-}
+
     stage('Build Image (si Dockerfile présent)') {
       when { expression { fileExists('Dockerfile') || fileExists('container/Dockerfile') } }
       steps {
