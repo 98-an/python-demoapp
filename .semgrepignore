@@ -1,0 +1,10 @@
+.git
+reports
+.pytest_cache
+_pycache_
+.venv
+node_modules
+build
+ci
+.github
+.vscode
