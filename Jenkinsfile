@@ -2,9 +2,9 @@ pipeline {
   agent any
 
   options {
+    skipDefaultCheckout(true)
     timestamps()
-    ansiColor('xterm')
-    buildDiscarder(logRotator(numToKeepStr: '20'))
+    disableConcurrentBuilds()
     timeout(time: 30, unit: 'MINUTES')
   }
 
