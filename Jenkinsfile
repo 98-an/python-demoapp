@@ -20,95 +20,132 @@ pipeline {
     SONAR_PROJECT_KEY = '98-an_python-demoapp'
   }
 
-    stages {
+  stages {
 
     stage('Checkout') {
       steps {
-        checkout([$class: 'GitSCM',
-          branches: [[name: '*/master']],
-          extensions: [[$class: 'CloneOption', shallow: true, depth: 1]],
-          userRemoteConfigs: [[url: 'https://github.com/98-an/python-demoapp.git', credentialsId: 'git-cred']]
-        ])
-        sh 'rm -rf "${REPORTS}" && mkdir -p "${REPORTS}"'
+        checkout scm
+        script { env.SHORT_SHA = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim() }
+        sh 'rm -rf reports && mkdir -p reports'
       }
     }
 
     stage('Python Lint & Tests & Bandit') {
+      when { expression { fileExists('src/requirements.txt') || fileExists('requirements.txt') || fileExists('pyproject.toml') } }
       steps {
         sh '''
-          set -euxo pipefail
-          docker run --rm -v "$PWD":/ws -w /ws python:3.11-slim bash -lc '
-            set -euxo pipefail
-            python -m pip install --upgrade pip
-            if   [ -f src/requirements.txt ]; then pip install --prefer-binary -r src/requirements.txt;
-            elif [ -f requirements.txt ];    then pip install --prefer-binary -r requirements.txt; fi
-            pip install pytest flake8 bandit pytest-cov
+          set -eux
+          docker run --rm \
+            -v "$PWD":/ws -w /ws python:3.11-slim bash -lc '
+              set -eux
+              python -m pip install --upgrade pip
+              if   [ -f src/requirements.txt ]; then pip install --prefer-binary -r src/requirements.txt
+              elif [ -f requirements.txt ];    then pip install --prefer-binary -r requirements.txt
+              fi
+              pip install pytest flake8 bandit pytest-cov
 
-            flake8 || true
+              # Lint (ne casse pas le build)
+              flake8 || :
 
-            # JUnit -> reports/, coverage à la racine (coverage.xml)
-            pytest --maxfail=1 --cov=. --cov-report=xml:coverage.xml \
-                   --junitxml=reports/pytest-report.xml || true
+              # Tests → rapports centralisés dans /ws/reports
+              pytest --maxfail=1 \
+                --cov=. \
+                --cov-report=xml:/ws/reports/coverage.xml \
+                --junitxml=/ws/reports/pytest-report.xml || :
 
-            bandit -r . -f html -o reports/bandit-report.html || true
-            [ -s reports/bandit-report.html ] || echo "<html><body><h2>Bandit</h2><p>Aucun résultat.</p></body></html>" > reports/bandit-report.html
-          '
+              # Bandit HTML
+              bandit -r . -f html -o /ws/reports/bandit-report.html || :
+            '
+          # Fallback XML si aucun test n'existe (pour satisfaire junit)
+          test -f reports/pytest-report.xml || echo '<testsuite tests="0"></testsuite>' > reports/pytest-report.xml
         '''
         junit allowEmptyResults: true, testResults: 'reports/pytest-report.xml'
-        publishHTML(target: [allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
-          reportDir: "${REPORTS}", reportFiles: "bandit-report.html", reportName: "Bandit (Python SAST)"])
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'bandit-report.html',
+          reportName: 'Bandit - Python SAST', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
     }
 
     stage('Hadolint (Dockerfile)') {
-      when { anyOf { fileExists('Dockerfile'); fileExists('container/Dockerfile') } }
+      when { expression { fileExists('Dockerfile') || fileExists('container/Dockerfile') || fileExists('build/Dockerfile') } }
       steps {
         sh '''
-          set -euxo pipefail
-          DF=Dockerfile; [ -f Dockerfile ] || DF=container/Dockerfile
-          docker pull hadolint/hadolint || true
-          docker run --rm -i hadolint/hadolint < "$DF" || true
+          set -eux
+          DF="Dockerfile"
+          [ -f "$DF" ] || DF="container/Dockerfile"
+          [ -f "$DF" ] || DF="build/Dockerfile"
+          docker run --rm -i hadolint/hadolint < "$DF" || :
         '''
       }
     }
 
-    stage('Gitleaks (Secrets)') {
+    stage('Gitleaks (Secrets, repo + historique)') {
       steps {
         sh '''
-          set -euxo pipefail
-          mkdir -p "${REPORTS}"
-          docker pull zricethezav/gitleaks:latest || true
-          docker run --rm -v "$PWD":/repo zricethezav/gitleaks:latest detect \
-            --no-git -s /repo -f sarif -r /repo/${REPORTS}/gitleaks.sarif || true
+          set -eux
+          docker run --rm \
+            -v "$PWD":/repo \
+            -v "$PWD/.git":/repo/.git:ro \
+            -e GIT_DISCOVERY_ACROSS_FILESYSTEM=1 \
+            zricethezav/gitleaks:latest bash -lc "
+              set -eux
+              git config --global --add safe.directory /repo || :
+              gitleaks detect --source /repo --report-format sarif --report-path /repo/reports/gitleaks.sarif || :
+            "
 
-          # petit résumé HTML
-          ( echo '<html><body><h2>Gitleaks (résumé)</h2><pre>';
-            (grep -o '"'"'ruleId'"'"' ${REPORTS}/gitleaks.sarif | wc -l | xargs echo Findings: ) 2>/dev/null || true;
-            echo '</pre></body></html>' ) > ${REPORTS}/gitleaks.html
+          {
+            echo '<html><body><h2>Gitleaks (résumé)</h2><pre>'
+            if [ -f reports/gitleaks.sarif ]; then
+              grep -o '\"ruleId\":' reports/gitleaks.sarif | wc -l | xargs echo "Findings:"
+            else
+              echo "Findings: 0"
+            fi
+            echo '</pre></body></html>'
+          } > reports/gitleaks.html
         '''
-        archiveArtifacts artifacts: "${REPORTS}/gitleaks.sarif", allowEmptyArchive: true
-        publishHTML(target: [allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
-          reportDir: "${REPORTS}", reportFiles: "gitleaks.html", reportName: "Gitleaks (Secrets)"])
+        archiveArtifacts artifacts: 'reports/gitleaks.sarif', allowEmptyArchive: true
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'gitleaks.html',
+          reportName: 'Gitleaks (Secrets)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
     }
 
-    stage('Semgrep (SAST)') {
+    stage('Semgrep (SAST, avec Git & excludes)') {
       steps {
         sh '''
-          set -euxo pipefail
-          mkdir -p "${REPORTS}"
-          docker pull returntocorp/semgrep:latest || true
-          docker run --rm -v "$PWD":/src -w /src returntocorp/semgrep:latest semgrep \
-            --no-git --config p/ci --sarif --output /src/${REPORTS}/semgrep.sarif \
-            --error --timeout 0 || true
+          set -eux
+          docker run --rm \
+            -v "$PWD":/src \
+            -v "$PWD/.git":/src/.git:ro \
+            -e GIT_DISCOVERY_ACROSS_FILESYSTEM=1 \
+            returntocorp/semgrep:latest bash -lc "
+              set -eux
+              git config --global --add safe.directory /src || :
+              # Utilise p/ci et, si présent, le fichier local de règles
+              CFGS='--config p/ci'
+              if [ -f /src/security/semgrep-rules.yml ]; then
+                CFGS=\"$CFGS --config /src/security/semgrep-rules.yml\"
+              fi
+              semgrep ${CFGS} \
+                --sarif --output /src/reports/semgrep.sarif \
+                --error --timeout 0 \
+                --exclude .git --exclude reports --exclude .pytest_cache --exclude _pycache_ \
+                --exclude .venv --exclude node_modules --exclude build --exclude ci \
+                --exclude .github --exclude .vscode \
+                /src || :
+            "
 
-          ( echo '<html><body><h2>Semgrep (résumé)</h2><pre>';
-            (grep -o '"'"'ruleId'"'"' ${REPORTS}/semgrep.sarif | wc -l | xargs echo Findings: ) 2>/dev/null || true;
-            echo '</pre></body></html>' ) > ${REPORTS}/semgrep.html
+          {
+            echo '<html><body><h2>Semgrep (résumé)</h2><pre>'
+            if [ -f reports/semgrep.sarif ]; then
+              grep -o '\"ruleId\":' reports/semgrep.sarif | wc -l | xargs echo "Findings:"
+            else
+              echo "Findings: 0"
+            fi
+            echo '</pre></body></html>'
+          } > reports/semgrep.html
         '''
-        archiveArtifacts artifacts: "${REPORTS}/semgrep.sarif", allowEmptyArchive: true
-        publishHTML(target: [allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
-          reportDir: "${REPORTS}", reportFiles: "semgrep.html", reportName: "Semgrep (SAST)"])
+        archiveArtifacts artifacts: 'reports/semgrep.sarif', allowEmptyArchive: true
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'semgrep.html',
+          reportName: 'Semgrep (SAST)', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
     }
 
@@ -116,78 +153,87 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
           sh '''
-            set -euxo pipefail
-            docker pull sonarsource/sonar-scanner-cli:latest || true
-            docker run --rm -e SONAR_HOST_URL -e SONAR_TOKEN \
-              -v "$PWD":/usr/src sonarsource/sonar-scanner-cli:latest \
-              -Dsonar.organization=98-an \
-              -Dsonar.projectKey=98-an_python-demoapp \
-              -Dsonar.projectName=98-an_python-demoapp \
-              -Dsonar.sources=. \
-              -Dsonar.scm.disabled=true \
-              -Dsonar.python.version=3.11 \
-              -Dsonar.python.coverage.reportPaths=coverage.xml \
-              -Dsonar.scanner.skipJreProvisioning=true || true
+            set -eux
+            docker run --rm \
+              -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+              -e SONAR_TOKEN="$SONAR_TOKEN" \
+              -v "$PWD":/usr/src \
+              -v "$PWD/.git":/usr/src/.git:ro \
+              sonarsource/sonar-scanner-cli:latest \
+                -Dsonar.organization="$SONAR_ORG" \
+                -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+                -Dsonar.projectName="$SONAR_PROJECT_KEY" \
+                -Dsonar.projectBaseDir=/usr/src \
+                -Dsonar.sources="src,app" \
+                -Dsonar.tests="tests" \
+                -Dsonar.exclusions="/tests/postman_collection.json,/_pycache_/,/.pytest_cache/" \
+                -Dsonar.scm.provider=git \
+                -Dsonar.python.version=3.11 \
+                -Dsonar.python.coverage.reportPaths=reports/coverage.xml \
+                -Dsonar.scanner.skipJreProvisioning=true || :
           '''
         }
       }
     }
 
     stage('Build Image (si Dockerfile présent)') {
-      when { anyOf { fileExists('Dockerfile'); fileExists('container/Dockerfile') } }
+      when { expression { fileExists('Dockerfile') || fileExists('container/Dockerfile') || fileExists('build/Dockerfile') } }
       steps {
         sh '''
-          set -euxo pipefail
-          DF=Dockerfile; [ -f Dockerfile ] || DF=container/Dockerfile
-          TAG=$(git rev-parse --short HEAD || echo latest)
-          docker build -f "$DF" -t demoapp:${TAG} .
-          echo demoapp:${TAG} > image.txt
+          set -eux
+          DF="Dockerfile"
+          [ -f "$DF" ] || DF="container/Dockerfile"
+          [ -f "$DF" ] || DF="build/Dockerfile"
+          docker build -f "$DF" -t "$IMAGE_NAME" .
+          echo "$IMAGE_NAME" > image.txt
         '''
-        archiveArtifacts 'image.txt'
+        archiveArtifacts artifacts: 'image.txt', fingerprint: true
       }
     }
 
-    stage('Trivy FS (deps & conf)') {
+    stage('Trivy FS (src/)') {
       steps {
         sh '''
-          set -euxo pipefail
-          mkdir -p "${REPORTS}"
-          docker pull aquasec/trivy:latest || true
+          set -eux
+          docker run --rm -v "$PWD":/project aquasec/trivy:latest \
+            fs --scanners vuln,secret,misconfig \
+               --format sarif -o /project/reports/trivy-fs.sarif \
+               /project/src || :
 
-          docker run --rm -v "$PWD":/project aquasec/trivy:latest fs \
-            --scanners vuln,secret,misconfig --format sarif \
-            -o /project/${REPORTS}/trivy-fs.sarif /project || true
+          docker run --rm -v "$PWD":/project aquasec/trivy:latest \
+            fs --scanners vuln,secret,misconfig -f table /project/src > reports/trivy-fs.txt || :
 
-          docker run --rm -v "$PWD":/project aquasec/trivy:latest fs \
-            --scanners vuln,secret,misconfig -f table /project > ${REPORTS}/trivy-fs.txt || true
-
-          ( echo '<html><body><h2>Trivy FS</h2><pre>'; cat ${REPORTS}/trivy-fs.txt 2>/dev/null || true; echo '</pre></body></html>' ) > ${REPORTS}/trivy-fs.html
+          { echo '<html><body><h2>Trivy FS</h2><pre>'; cat reports/trivy-fs.txt 2>/dev/null || true; echo '</pre></body></html>'; } \
+            > reports/trivy-fs.html
         '''
-        archiveArtifacts artifacts: "${REPORTS}/trivy-fs.sarif, ${REPORTS}/trivy-fs.txt", allowEmptyArchive: true
-        publishHTML(target: [allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
-          reportDir: "${REPORTS}", reportFiles: "trivy-fs.html", reportName: "Trivy FS"])
+        archiveArtifacts artifacts: 'reports/trivy-fs.sarif, reports/trivy-fs.txt', allowEmptyArchive: true
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'trivy-fs.html',
+          reportName: 'Trivy FS', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
     }
 
     stage('Trivy Image (si image.txt)') {
-      when { expression { return fileExists('image.txt') } }
+      when { expression { fileExists('image.txt') } }
       steps {
         sh '''
-          set -euxo pipefail
+          set -eux
           IMG=$(cat image.txt)
 
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$PWD":/project aquasec/trivy:latest image --format sarif \
-            -o /project/${REPORTS}/trivy-image.sarif "$IMG" || true
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/project aquasec/trivy:latest \
+            image --format sarif -o /project/reports/trivy-image.sarif "$IMG" || :
 
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:latest image -f table "$IMG" > ${REPORTS}/trivy-image.txt || true
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image -f table "$IMG" > reports/trivy-image.txt || :
 
-          ( echo '<html><body><h2>Trivy Image</h2><pre>'; cat ${REPORTS}/trivy-image.txt 2>/dev/null || true; echo '</pre></body></html>' ) > ${REPORTS}/trivy-image.html
+          { echo '<html><body><h2>Trivy Image</h2><pre>'; cat reports/trivy-image.txt 2>/dev/null || true; echo '</pre></body></html>'; } \
+            > reports/trivy-image.html
         '''
-        archiveArtifacts artifacts: "${REPORTS}/trivy-image.sarif, ${REPORTS}/trivy-image.txt", allowEmptyArchive: true
-        publishHTML(target: [allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
-          reportDir: "${REPORTS}", reportFiles: "trivy-image.html", reportName: "Trivy Image"])
+        archiveArtifacts artifacts: 'reports/trivy-image.sarif, reports/trivy-image.txt', allowEmptyArchive: true
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'trivy-image.html',
+          reportName: 'Trivy Image', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
     }
 
@@ -195,27 +241,50 @@ pipeline {
       options { timeout(time: 8, unit: 'MINUTES') }
       steps {
         sh '''
-          set -euxo pipefail
-          mkdir -p "${REPORTS}"
-          # multiples fallback d’images (DockerHub/weekly puis GHCR)
-          docker pull owasp/zap2docker-stable || docker pull owasp/zap2docker-weekly || docker pull ghcr.io/zaproxy/zap2docker-stable || true
-
-          ( docker run --rm -v "$PWD/${REPORTS}":/zap/wrk owasp/zap2docker-stable \
-              zap-baseline.py -t "${DAST_TARGET}" -r zap-baseline.html ) || true
-
-          [ -f ${REPORTS}/zap-baseline.html ] || echo "<html><body><p>ZAP non exécuté (pull bloqué ou cible indisponible).</p></body></html>" > ${REPORTS}/zap-baseline.html
+          set -eux
+          docker run --rm -v "$PWD/reports:/zap/wrk" ghcr.io/zaproxy/zap2docker-stable \
+            zap-baseline.py -t "$DAST_TARGET" -r zap-baseline.html || :
         '''
-        publishHTML(target: [allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
-          reportDir: "${REPORTS}", reportFiles: "zap-baseline.html", reportName: "ZAP Baseline"])
+        publishHTML(target: [reportDir: 'reports', reportFiles: 'zap-baseline.html',
+          reportName: 'ZAP Baseline', keepAll: true, alwaysLinkToLastBuild: true, allowMissing: true])
       }
     }
+
+    /*  ————————  Publis S3 (facultatif) ————————
+    stage('Publish reports to S3') {
+      when { expression { fileExists('reports') } }
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'aws-up',
+                                          usernameVariable: 'AWS_ACCESS_KEY_ID',
+                                          passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+          sh '''
+            set -eux
+            if [ -z "$(ls -A reports || true)" ]; then
+              echo "Aucun rapport à publier, on saute."
+              exit 0
+            fi
+            DEST="s3://${S3_BUCKET}/${JOB_NAME}/${BUILD_NUMBER}/"
+            docker run --rm \
+              -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+              -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+              -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+              -v "$PWD/reports:/reports" amazon/aws-cli \
+              s3 cp /reports "${DEST}" --recursive --sse AES256
+            [ -f image.txt ] && docker run --rm \
+              -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+              -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+              -e AWS_DEFAULT_REGION="${AWS_REGION}" \
+              -v "$PWD:/w" amazon/aws-cli s3 cp /w/image.txt "${DEST}" || true
+          '''
+        }
+      }
+    }
+    */
   }
 
   post {
     always {
-      archiveArtifacts artifacts: "coverage.xml, image.txt, ${REPORTS}/*", allowEmptyArchive: true
-      echo "Pour récupérer localement :"
-      echo "docker cp jenkins:/var/jenkins_home/workspace/${JOB_NAME}/reports ./reports_from_jenkins && ls -al ./reports_from_jenkins || true"
+      archiveArtifacts artifacts: 'reports/, */.log, */target/.jar', allowEmptyArchive: true
     }
   }
 }
