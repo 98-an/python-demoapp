@@ -9,3 +9,6 @@ scrape_configs:
   - job_name: 'cadvisor'
     static_configs:
       - targets: ['cadvisor:8081']
+
+  - job_name: 'demoapp'
+    static_configs: [{ targets: ['localhost:5000'] }]
