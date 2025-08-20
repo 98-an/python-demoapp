@@ -17,7 +17,7 @@ pipeline {
             }
         }
         stage("OWASP Dependency Check") {
-            steps {
+            steps { 
                 dependencyCheck additionalArguments: '--scan ./ --format XML --enableExperimental', odcInstallation: 'DC'
                 dependencyCheckPublisher pattern: 'dependency-check-report.xml'
             }
