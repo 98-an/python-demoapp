@@ -11,7 +11,7 @@ pipeline {
                 script {
                     def scannerHome = tool name: 'sonar-qube', type: 'hudson.plugins.sonar.SonarRunnerInstallation'
                     withSonarQubeEnv('sonar-server') {
-                        sh "${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=xssapp-scan"
+                        sh "${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=xssapp-scan -Dsonar.sources=src"
                     }
                 }
             }
