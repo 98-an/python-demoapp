@@ -2,9 +2,22 @@ pipeline {
     agent any
 
     stages {
+        stage('Build') {
+            steps {
+                echo 'Step 1: Build started'
+                sleep 2
+            }
+        }
         stage('Test') {
             steps {
-                echo 'Hello, Jenkins pipeline is working!'
+                echo 'Step 2: Running tests'
+                sleep 2
+            }
+        }
+        stage('Deploy') {
+            steps {
+                echo 'Step 3: Deploying application'
+                sleep 2
             }
         }
     }
