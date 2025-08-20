@@ -14,7 +14,6 @@ pipeline {
     AWS_REGION        = 'eu-north-1'
     DAST_TARGET       = 'http://16.170.87.165:5000'
 
-    // SonarCloud
     SONAR_HOST_URL    = 'https://sonarcloud.io'
     SONAR_ORG         = '98-an'
     SONAR_PROJECT_KEY = '98-an_python-demoapp'
