@@ -35,30 +35,44 @@ pipeline {
                 }
             }
         }
+       
         stage('Docker Push') {
             steps {
-                withCredentials([string(credentialsId: 'dockerhub-pwd', variable: 'dockerhubpwd')]) {
-                    sh 'docker login -u yasdevsec -p ${dockerhubpwd}'
-                    sh 'docker push yasdevsec/python-demoapp:v2'
+                withCredentials([usernamePassword(credentialsId: 'dockerhub', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
+                    sh '''
+                        echo "$PASS" | docker login -u "$USER" --password-stdin
+                        docker images | grep yasdevsec/python-demoapp || true
+                        docker push yasdevsec/python-demoapp:v2
+                    '''
                 }
             }
         }
         stage('Deploy Container') {
             steps {
-                sh 'docker stop vulnlab || true'
-                sh 'docker rm vulnlab || true'
-                sh 'docker run -d --name vulnlab -p 5000:5000 yasdevsec/python-demoapp:v2'
+                sh 'docker stop py || true'
+                sh 'docker rm py || true'
+                sh 'docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2'
             }
         }
-        stage('OWASP ZAP Scan') {
+       stage('ZAP Full Scan') {
+            options { timeout(time: 30, unit: 'MINUTES') }
             steps {
-                script {
-                    try {
-                        sh "docker run --rm -v ${pwd()}:/zap/wrk -i owasp/zap2docker-stable zap-baseline.py -t"
-                    } catch (Exception e) {
-                        echo "OWASP ZAP scan completed with findings."
-                        currentBuild.result = 'SUCCESS'
-                    }
+                sh '''#!/usr/bin/env bash
+                    set -euxo pipefail
+                    docker pull ghcr.io/zaproxy/zaproxy:stable
+                    TARGET="http://13.50.222.204:5000/"
+                    docker run --rm --network host \
+                        -v "$PWD":/zap/wrk \
+                        ghcr.io/zaproxy/zaproxy:stable \
+                        zap-full-scan.py -t "$TARGET" \
+                                         -r zap-full.html \
+                                         -J zap-full.json \
+                                         -d -I
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'zap-full.*', allowEmptyArchive: true
                 }
             }
         }
