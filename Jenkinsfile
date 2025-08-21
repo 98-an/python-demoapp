@@ -1,4 +1,4 @@
-pipeline {
+-fpipeline {
     agent any
     stages {
         stage('Git Checkout') {
@@ -24,7 +24,7 @@ pipeline {
         }
         stage('Docker Build') {
             steps {
-                sh 'docker build -t yasdevsec/python-demoapp:v2 .'
+                sh 'docker build -f container/Dockerfile -t yasdevsec/python-demoapp:v2 .'
             }
         }
         stage('Trivy Scan') {
