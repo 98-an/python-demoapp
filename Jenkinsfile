@@ -50,14 +50,15 @@ pipeline {
        stage('Deploy Container') {
     steps {
         sh '''
-            docker stop py || true
-            docker rm py || true
-            # Arrêter tout conteneur utilisant le port 5000
-            docker ps -q --filter "publish=5000" | xargs -r docker stop
+            # Supprime tous les conteneurs basés sur l'image poussée
+            docker ps -aq --filter "ancestor=yasdevsec/python-demoapp:v2" | xargs -r docker rm -f
+
+            # Lance le nouveau conteneur
             docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
         '''
     }
 }
+
        stage('OWASP ZAP Scan') {
             steps {
                 script {
