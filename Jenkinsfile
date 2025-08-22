@@ -6,16 +6,28 @@ pipeline {
                 checkout scm
             }
         }
-        stage('Run SonarQube Analysis') {
-            steps {
-                script {
-                    def scannerHome = tool name: 'sonar-qube', type: 'hudson.plugins.sonar.SonarRunnerInstallation'
-                    withSonarQubeEnv('sonar-server') {
-                        sh "${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=pythonapp -Dsonar.sources=src"
-                    }
-                }
-            }
-        }
+        stage('Deploy Container') {
+  steps {
+    sh '''
+      set -e
+
+      # 1) Nettoyage de NOTRE conteneur
+      docker rm -f py || true
+
+      # 2) Choix d'un port libre (on démarre à 5000)
+      PORT=5000
+      while ss -ltn | awk "{print \\$4}" | grep -qE "(:|^)${PORT}$|:${PORT}$"; do
+        PORT=$((PORT+1))
+      done
+      echo "Port sélectionné pour le déploiement: ${PORT}"
+
+      # 3) Lancement
+      docker run -d --name py -p ${PORT}:5000 yasdevsec/python-demoapp:v2
+
+      echo "Application démarrée: http://$(hostname -I | awk '{print $1}'):${PORT}"
+    '''
+  }
+}
         stage("OWASP Dependency Check") {
             steps { 
                 dependencyCheck additionalArguments: '--scan ./ --format XML --enableExperimental', odcInstallation: 'DC'
