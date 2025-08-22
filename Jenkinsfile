@@ -1,44 +1,26 @@
 pipeline {
     agent any
+
     stages {
         stage('Git Checkout') {
             steps {
                 checkout scm
             }
         }
-        stage('Deploy Container') {
-  steps {
-    sh '''
-      set -e
 
-      # 1) Nettoyage de NOTRE conteneur
-      docker rm -f py || true
-
-      # 2) Choix d'un port libre (on démarre à 5000)
-      PORT=5000
-      while ss -ltn | awk "{print \\$4}" | grep -qE "(:|^)${PORT}$|:${PORT}$"; do
-        PORT=$((PORT+1))
-      done
-      echo "Port sélectionné pour le déploiement: ${PORT}"
-
-      # 3) Lancement
-      docker run -d --name py -p ${PORT}:5000 yasdevsec/python-demoapp:v2
-
-      echo "Application démarrée: http://$(hostname -I | awk '{print $1}'):${PORT}"
-    '''
-  }
-}
-        stage("OWASP Dependency Check") {
-            steps { 
+        stage('OWASP Dependency Check') {
+            steps {
                 dependencyCheck additionalArguments: '--scan ./ --format XML --enableExperimental', odcInstallation: 'DC'
                 dependencyCheckPublisher pattern: 'dependency-check-report.xml'
             }
         }
+
         stage('Docker Build') {
             steps {
                 sh 'docker build -f container/Dockerfile -t yasdevsec/python-demoapp:v2 .'
             }
         }
+
         stage('Trivy Scan') {
             steps {
                 script {
@@ -47,7 +29,7 @@ pipeline {
                 }
             }
         }
-       
+
         stage('Docker Push') {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'dockerhub', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
@@ -59,19 +41,31 @@ pipeline {
                 }
             }
         }
-       stage('Deploy Container') {
-    steps {
-        sh '''
-            # Supprime tous les conteneurs basés sur l'image poussée
-            docker ps -aq --filter "ancestor=yasdevsec/python-demoapp:v2" | xargs -r docker rm -f
 
-            # Lance le nouveau conteneur
-            docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
-        '''
-    }
-}
+        stage('Deploy Container') {
+            steps {
+                sh '''
+                    set -e
 
-       stage('OWASP ZAP Scan') {
+                    # 1) Nettoyage de NOTRE conteneur
+                    docker rm -f py || true
+
+                    # 2) Choix d'un port libre (on démarre à 5000)
+                    PORT=5000
+                    while ss -ltn | awk "{print \\$4}" | grep -qE "(:|^)${PORT}$|:${PORT}$"; do
+                        PORT=$((PORT+1))
+                    done
+                    echo "Port sélectionné pour le déploiement: ${PORT}"
+
+                    # 3) Lancement
+                    docker run -d --name py -p ${PORT}:5000 yasdevsec/python-demoapp:v2
+
+                    echo "Application démarrée: http://$(hostname -I | awk '{print $1}'):${PORT}"
+                '''
+            }
+        }
+
+        stage('OWASP ZAP Scan') {
             steps {
                 script {
                     try {
