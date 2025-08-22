@@ -47,13 +47,17 @@ pipeline {
                 }
             }
         }
-        stage('Deploy Container') {
-            steps {
-                sh 'docker stop py || true'
-                sh 'docker rm py || true'
-                sh 'docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2'
-            }
-        }
+       stage('Deploy Container') {
+    steps {
+        sh '''
+            docker stop py || true
+            docker rm py || true
+            # Arrêter tout conteneur utilisant le port 5000
+            docker ps -q --filter "publish=5000" | xargs -r docker stop
+            docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
+        '''
+    }
+}
        stage('OWASP ZAP Scan') {
             steps {
                 script {
