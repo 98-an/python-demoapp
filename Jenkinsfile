@@ -50,12 +50,13 @@ pipeline {
        stage('Deploy Container') {
     steps {
         sh '''
-            # Supprime tous les conteneurs basés sur l'image poussée
-            docker ps -aq --filter "ancestor=yasdevsec/python-demoapp:v2" | xargs -r docker rm -f
+    # Supprime tous les conteneurs basés sur l'image poussée
+    sudo docker ps -aq --filter "ancestor=yasdevsec/python-demoapp:v2" | xargs -r sudo docker rm -f
 
-            # Lance le nouveau conteneur
-            docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
-        '''
+    # Lance le nouveau conteneur
+    sudo docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
+    '''
+
     }
 }
 
