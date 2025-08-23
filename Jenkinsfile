@@ -71,7 +71,7 @@ pipeline {
         script {
           def target_url = "http://13.50.222.204:5000"
           sh """
-               MP_DIR=/tmp/jenkins_zap_work
+               TMP_DIR=/tmp/jenkins_zap_work
                 mkdir -p $TMP_DIR
                 chmod 777 $TMP_DIR
                 sudo docker run --rm -v $TMP_DIR:/zap/wrk:rw --network=host zaproxy/zap-stable \
