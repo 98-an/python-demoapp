@@ -67,25 +67,19 @@ pipeline {
     }
 
     stage('OWASP ZAP Full Scan') {
-      steps {
-        script {
-          def target_url = "http://13.50.222.204:5000"
-          sh """
-            docker run --rm -v \$PWD:/zap/wrk/:rw owasp/zap2docker-stable zap-baseline.py \
-              -t ${target_url} \
-              -r zap-full-report.html \
-              -a
-          """
-        }
-        publishHTML(target: [
-          allowMissing: false,
-          alwaysLinkToLastBuild: true,
-          keepAll: true,
-          reportDir: '.',
-          reportFiles: 'zap-full-report.html',
-          reportName: 'OWASP ZAP Full Scan Report'
-        ])
-      }
+  steps {
+    script {
+      def target_url = "http://13.50.222.204:5000"
+      sh """
+        docker run --rm -v \$PWD:/zap/wrk:rw \
+          zaproxy/zap-stable zap-full-scan.py \
+          -t ${target_url} -r zap-full-report.html -a
+      """
     }
+    publishHTML(target: [
+      allowMissing: false, alwaysLinkToLastBuild: true, keepAll: true,
+      reportDir: '.', reportFiles: 'zap-full-report.html',
+      reportName: 'OWASP ZAP Full Scan Report'
+    ])
   }
 }
