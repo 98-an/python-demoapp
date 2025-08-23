@@ -43,27 +43,29 @@ pipeline {
         }
 
         stage('Deploy Container') {
-            steps {
-                sh '''
-                    set -e
+  steps {
+    sh '''
+      set -e
 
-                    # 1) Nettoyage de NOTRE conteneur
-                    docker rm -f py || true
+      # Stopper les conteneurs en cours dont le nom correspond exactement à "py"
+      docker ps -q -f name=^py$ | xargs -r docker stop
 
-                    # 2) Choix d'un port libre (on démarre à 5000)
-                    PORT=5000
-                    while ss -ltn | awk "{print \\$4}" | grep -qE "(:|^)${PORT}$|:${PORT}$"; do
-                        PORT=$((PORT+1))
-                    done
-                    echo "Port sélectionné pour le déploiement: ${PORT}"
+      # Supprimer les conteneurs (même arrêtés) nommés "py"
+      docker ps -aq -f name=^py$ | xargs -r docker rm -f
 
-                    # 3) Lancement
-                    docker run -d --name py -p ${PORT}:5000 yasdevsec/python-demoapp:v2
+      # (Optionnel) Vérifier que le port 5000 est libre
+      if ss -ltn | awk "{print \\$4}" | grep -qE "(:|^)5000$|:5000$"; then
+        echo "ERREUR: le port 5000 est déjà utilisé." >&2
+        exit 1
+      fi
 
-                    echo "Application démarrée: http://$(hostname -I | awk '{print $1}'):${PORT}"
-                '''
-            }
-        }
+      # Relancer le conteneur
+      docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
+      echo "Application démarrée sur http://$(hostname -I | awk '{print $1}'):5000"
+    '''
+  }
+}
+
 
         stage('OWASP ZAP Scan') {
             steps {
