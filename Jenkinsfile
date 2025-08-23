@@ -49,14 +49,21 @@ pipeline {
         }
        stage('Deploy Container') {
   steps {
-    sh '''
-      PID=$(docker inspect -f '{{.State.Pid}}' py 2>/dev/null || true); [ "${PID:-0}" -gt 0 ] && sudo kill -9 "$PID" || true
-      for c in $(docker ps -q -f publish=5000); do p=$(docker inspect -f '{{.State.Pid}}' "$c" 2>/dev/null); [ "${p:-0}" -gt 0 ] && sudo kill -9 "$p" || true; done
-      docker rm -f py >/dev/null 2>&1 || true
-      docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
-      echo "http://13.50.222.204:5000"
-    '''
+    withCredentials([string(credentialsId: 'sudo-pw', variable: 'SUDO_PW')]) {
+      sh '''
+        pid=$(docker inspect -f '{{.State.Pid}}' py 2>/dev/null || true)
+        [ "${pid:-0}" -gt 0 ] && printf "%s\n" "$SUDO_PW" | sudo -S kill -9 "$pid" || true
+        for id in $(docker ps -q -f publish=5000); do
+          p=$(docker inspect -f '{{.State.Pid}}' "$id" 2>/dev/null)
+          [ "${p:-0}" -gt 0 ] && printf "%s\n" "$SUDO_PW" | sudo -S kill -9 "$p" || true
+        done
+        docker rm -f py >/dev/null 2>&1 || true
+        docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
+        echo "http://13.50.222.204:5000"
+      '''
+    }
   }
+}
 }
 
 
