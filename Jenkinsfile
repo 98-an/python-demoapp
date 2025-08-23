@@ -50,14 +50,24 @@ pipeline {
        stage('Deploy Container') {
     steps {
         sh '''
-            # Supprime tous les conteneurs basés sur l'image poussée
-            docker ps -aq --filter "ancestor=yasdevsec/python-demoapp:v2" | xargs -r docker rm -f
+            # Tuer (via PID) tout conteneur publiant le port 5000
+            docker ps -q --filter "publish=5000" | xargs -r -I{} sh -c '
+              pid=$(docker inspect -f "{{.State.Pid}}" {} 2>/dev/null);
+              if [ -n "$pid" ] && [ "$pid" -gt 0 ]; then
+                if command -v sudo >/dev/null 2>&1; then s=sudo; else s=""; fi
+                $s kill -9 "$pid" || true
+              fi
+            '
 
-            # Lance le nouveau conteneur
+            # Supprimer le conteneur "py" s'il existe (après kill il peut rester en Exited)
+            docker ps -aq -f name=^py$ | xargs -r docker rm -f
+
+            # Lancer le nouveau conteneur sur 5000
             docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
         '''
     }
 }
+
 
        stage('OWASP ZAP Scan') {
             steps {
