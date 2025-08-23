@@ -66,33 +66,22 @@ pipeline {
       }
     }
 
-    stage('OWASP ZAP Full Scan') {
-      steps {
+    stage('OWASP ZAP Full Scan - No Volume Mount') {
+    steps {
         script {
-          def target_url = "http://13.50.222.204:5000"
-          sh """
-               set -e
-        TMP_DIR=/tmp/jenkins_zap_work
-        sudo mkdir -p "$TMP_DIR"
-        sudo chown 1000:1000 "$TMP_DIR"      # user 'zap' dans l'image
+            def containerId = sh(script: '''
+                sudo docker create zaproxy/zap-stable zap-baseline.py -t http://13.50.222.204:5000 -r /zap/wrk/scan-report.html
+            ''', returnStdout: true).trim()
 
-        sudo docker run --rm --network=host \
-          -v "$TMP_DIR":/zap/wrk:rw \
-          zaproxy/zap-stable zap-baseline.py \
-          -t ${target} -r scan-report.html
-
-        sudo cp "$TMP_DIR/scan-report.html" .
+            sh """
+                sudo docker start -a $containerId
+                sudo docker cp $containerId:/zap/wrk/scan-report.html .
+                sudo docker rm $containerId
             """
         }
-        publishHTML(target: [
-          allowMissing: false,
-          alwaysLinkToLastBuild: true,
-          keepAll: true,
-          reportDir: '.',
-          reportFiles: 'zap-full-report.html',
-          reportName: 'OWASP ZAP Full Scan Report'
-        ])
-      }
+        archiveArtifacts artifacts: 'scan-report.html'
+    }
+}
     }
   }
-}
+  
