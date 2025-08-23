@@ -71,9 +71,11 @@ pipeline {
         script {
           def target_url = "http://13.50.222.204:5000"
           sh """
-            sudo docker run --rm -v \$PWD:/zap/wrk:rw zaproxy/zap-stable zap-full-scan.py \\
-              -t ${target_url} -r zap-full-report.html -a
-          """
+                TMP_ZAP_DIR=/tmp/jenkins_zap_work
+                mkdir -p \$TMP_ZAP_DIR
+                sudo docker run --rm -v \$TMP_ZAP_DIR:/zap/wrk:rw zaproxy/zap-stable zap-full-scan.py -t http://13.50.222.204:5000 -r zap-full-report.html -a
+                cp \$TMP_ZAP_DIR/zap-full-report.html ./
+            """
         }
         publishHTML(target: [
           allowMissing: false,
