@@ -1,26 +1,32 @@
 pipeline {
     agent any
-
     stages {
         stage('Git Checkout') {
             steps {
                 checkout scm
             }
         }
-
-        stage('OWASP Dependency Check') {
+        stage('Run SonarQube Analysis') {
             steps {
+                script {
+                    def scannerHome = tool name: 'sonar-qube', type: 'hudson.plugins.sonar.SonarRunnerInstallation'
+                    withSonarQubeEnv('sonar-server') {
+                        sh "${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=pythonapp -Dsonar.sources=src"
+                    }
+                }
+            }
+        }
+        stage("OWASP Dependency Check") {
+            steps { 
                 dependencyCheck additionalArguments: '--scan ./ --format XML --enableExperimental', odcInstallation: 'DC'
                 dependencyCheckPublisher pattern: 'dependency-check-report.xml'
             }
         }
-
         stage('Docker Build') {
             steps {
                 sh 'docker build -f container/Dockerfile -t yasdevsec/python-demoapp:v2 .'
             }
         }
-
         stage('Trivy Scan') {
             steps {
                 script {
@@ -29,7 +35,7 @@ pipeline {
                 }
             }
         }
-
+       
         stage('Docker Push') {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'dockerhub', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
@@ -41,33 +47,19 @@ pipeline {
                 }
             }
         }
+       stage('Deploy Container') {
+    steps {
+        sh '''
+            # Supprime tous les conteneurs basés sur l'image poussée
+            docker ps -aq --filter "ancestor=yasdevsec/python-demoapp:v2" | xargs -r docker rm -f
 
-        stage('Deploy Container') {
-  steps {
-    sh '''
-      set -e
-
-      # Stopper les conteneurs en cours dont le nom correspond exactement à "py"
-      docker ps -q -f name=^py$ | xargs -r docker stop
-
-      # Supprimer les conteneurs (même arrêtés) nommés "py"
-      docker ps -aq -f name=^py$ | xargs -r docker rm -f
-
-      # (Optionnel) Vérifier que le port 5000 est libre
-      if ss -ltn | awk "{print \\$4}" | grep -qE "(:|^)5000$|:5000$"; then
-        echo "ERREUR: le port 5000 est déjà utilisé." >&2
-        exit 1
-      fi
-
-      # Relancer le conteneur
-      docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
-      echo "Application démarrée sur http://13.50.222.204:5000"
-    '''
-  }
+            # Lance le nouveau conteneur
+            docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
+        '''
+    }
 }
 
-
-        stage('OWASP ZAP Scan') {
+       stage('OWASP ZAP Scan') {
             steps {
                 script {
                     try {
