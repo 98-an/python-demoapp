@@ -48,25 +48,17 @@ pipeline {
             }
         }
        stage('Deploy Container') {
-    steps {
-        sh '''
-            # Tuer (via PID) tout conteneur publiant le port 5000
-            docker ps -q --filter "publish=5000" | xargs -r -I{} sh -c '
-              pid=$(docker inspect -f "{{.State.Pid}}" {} 2>/dev/null);
-              if [ -n "$pid" ] && [ "$pid" -gt 0 ]; then
-                if command -v sudo >/dev/null 2>&1; then s=sudo; else s=""; fi
-                $s kill -9 "$pid" || true
-              fi
-            '
-
-            # Supprimer le conteneur "py" s'il existe (après kill il peut rester en Exited)
-            docker ps -aq -f name=^py$ | xargs -r docker rm -f
-
-            # Lancer le nouveau conteneur sur 5000
-            docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
-        '''
-    }
+  steps {
+    sh '''
+      PID=$(docker inspect -f '{{.State.Pid}}' py 2>/dev/null || true); [ "${PID:-0}" -gt 0 ] && sudo kill -9 "$PID" || true
+      for c in $(docker ps -q -f publish=5000); do p=$(docker inspect -f '{{.State.Pid}}' "$c" 2>/dev/null); [ "${p:-0}" -gt 0 ] && sudo kill -9 "$p" || true; done
+      docker rm -f py >/dev/null 2>&1 || true
+      docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
+      echo "http://13.50.222.204:5000"
+    '''
+  }
 }
+
 
 
        stage('OWASP ZAP Scan') {
