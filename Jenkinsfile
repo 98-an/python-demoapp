@@ -61,7 +61,7 @@ pipeline {
 
       # Relancer le conteneur
       docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
-      echo "Application démarrée sur http://$(hostname -I | awk '{print $1}'):5000"
+      echo "Application démarrée sur http://13.50.222.204:5000"
     '''
   }
 }
