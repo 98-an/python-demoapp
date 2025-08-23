@@ -48,15 +48,30 @@ pipeline {
             }
         }
        stage('Deploy Container') {
-    steps {
-        sh '''
-            # Supprime tous les conteneurs basés sur l'image poussée
-            docker ps -aq --filter "ancestor=yasdevsec/python-demoapp:v2" | xargs -r docker rm -f
+  steps {
+    sh '''
+      set -euo pipefail
 
-            # Lance le nouveau conteneur
-            docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
-        '''
-    }
+      IMAGE="yasdevsec/python-demoapp:v2"
+      NAME="py-${BUILD_NUMBER}"
+      LABELS="--label app=python-demoapp --label owner=jenkins --label job=${JOB_NAME:-unknown} --label build=${BUILD_NUMBER}"
+
+      # Choisir un port libre en partant de 5000
+      PORT=5000
+      while ss -ltn | awk '{print $4}' | grep -qE "(:|^)${PORT}$|:${PORT}$"; do
+        PORT=$((PORT+1))
+      done
+
+      # Lancer SANS arrêter les autres conteneurs
+      docker run -d --name "${NAME}" ${LABELS} -p ${PORT}:5000 ${IMAGE}
+
+      # IP publique EC2 (IMDSv2). Si indispo, on met ton IP connue.
+      TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60" || true)
+      PUBLIC_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4 || echo "13.50.222.204")
+
+      echo "Application démarrée sur http://${PUBLIC_IP}:${PORT}"
+    '''
+  }
 }
 
        stage('OWASP ZAP Scan') {
