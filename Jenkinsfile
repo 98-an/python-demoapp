@@ -67,24 +67,32 @@ pipeline {
     }
 
     stage('OWASP ZAP Full Scan') {
-      steps {
-        script {
-          def target_url = "http://13.50.222.204:5000"
-          sh """
-            docker run --rm -v \$PWD:/zap/wrk:rw \\
-              zaproxy/zap-stable zap-full-scan.py \\
-              -t ${target_url} -r zap-full-report.html -a
-          """
-        }
-        publishHTML(target: [
-          allowMissing: false,
-          alwaysLinkToLastBuild: true,
-          keepAll: true,
-          reportDir: '.',
-          reportFiles: 'zap-full-report.html',
-          reportName: 'OWASP ZAP Full Scan Report'
-        ])
-      }
+  steps {
+    script {
+      def target_url = "http://13.50.222.204:5000"
+      sh '''
+        set -e
+        # 1) Lancer ZAP sans volume (pas de --rm pour pouvoir copier après)
+        docker run --name zap-scan \
+          zaproxy/zap-stable \
+          zap-full-scan.py -t ''' + target_url + ''' -r /zap/wrk/zap-full-report.html -a || true
+
+        # 2) Récupérer le rapport depuis le conteneur
+        docker cp zap-scan:/zap/wrk/zap-full-report.html .
+
+        # 3) Nettoyage
+        docker rm -f zap-scan >/dev/null 2>&1 || true
+      '''
     }
+    publishHTML(target: [
+      allowMissing: false,
+      alwaysLinkToLastBuild: true,
+      keepAll: true,
+      reportDir: '.',
+      reportFiles: 'zap-full-report.html',
+      reportName: 'OWASP ZAP Full Scan Report'
+    ])
+  }
+}
   }
 }
