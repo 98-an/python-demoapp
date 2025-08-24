@@ -13,14 +13,14 @@ scrape_configs:
    - job_name: 'demoapp'
     metrics_path: /metrics
     static_configs:
-      - targets: ['172.31.33.40:5000']
+      - targets: ['13.50.222.204:5000']
 
   - job_name: 'node'
     static_configs:
-      - targets: ['172.31.33.40:9100'] 
+      - targets: ['13.50.222.204:9100'] 
 
    - job_name: 'jenkins'
     metrics_path: /prometheus
     static_configs:
-      - targets: ['16.170.87.165:8080']    
+      - targets: ['13.50.222.204:8080']    
     
