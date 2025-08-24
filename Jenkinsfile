@@ -80,10 +80,12 @@ pipeline {
     steps {
         script {
             sh """
-                TMP_ZAP_DIR=/tmp/jenkins_zap_work
-                mkdir -p \$TMP_ZAP_DIR
-                sudo docker run --rm -v \$TMP_ZAP_DIR:/zap/wrk:rw zaproxy/zap-stable zap-full-scan.py -t http://13.50.222.204:5000 -r zap-full-report.html -a
-                cp \$TMP_ZAP_DIR/zap-full-report.html ./
+                sudo docker run --rm \
+                  -v /tmp/jenkins_zap_work:/zap/wrk:rw \
+                  -v /tmp/jenkins_zap_home:/home/zap \
+                  zaproxy/zap-stable \
+                  zap-full-scan.py -t http://13.50.222.204:5000 -r /zap/wrk/zap-full-report.html -a
+                cp /tmp/jenkins_zap_work/zap-full-report.html .
             """
         }
         publishHTML(target: [
