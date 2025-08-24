@@ -65,44 +65,46 @@ pipeline {
         '''
       }
     }
+
     stage('Check TMP_DIR Permissions') {
-    steps {
+      steps {
         sh '''
-            TMP_DIR=/tmp/jenkins_zap_work
-            mkdir -p $TMP_DIR
-            ls -ld $TMP_DIR
-            whoami
+          TMP_DIR=/tmp/jenkins_zap_work
+          mkdir -p "$TMP_DIR"
+          ls -ld "$TMP_DIR"
+          whoami
         '''
+      }
     }
-}
 
     stage('OWASP ZAP Full Scan') {
-  steps {
-    script {
-      sh '''
-        set -e
-        TMP_DIR=/tmp/jenkins_zap_work
-        sudo mkdir -p "$TMP_DIR"
-        # l’utilisateur "zap" (UID 1000) doit pouvoir écrire
-        sudo chown 1000:1000 "$TMP_DIR"
+      steps {
+        script {
+          sh '''
+            set -e
+            TMP_DIR=/tmp/jenkins_zap_work
+            sudo mkdir -p "$TMP_DIR"
+            # l’utilisateur "zap" (UID 1000) doit pouvoir écrire
+            sudo chown 1000:1000 "$TMP_DIR"
 
-        sudo docker run --rm --network=host \
-          -v "$TMP_DIR":/zap/wrk:rw \
-          zaproxy/zap-stable zap-baseline.py \
-          -t http://13.50.222.204:5000 -r /zap/wrk/scan-report.html
+            sudo docker run --rm --network=host \
+              -v "$TMP_DIR":/zap/wrk:rw \
+              zaproxy/zap-stable zap-baseline.py \
+              -t http://13.50.222.204:5000 -r /zap/wrk/scan-report.html
 
-        ls -l "$TMP_DIR"
-        cp "$TMP_DIR/scan-report.html" .
-      '''
+            ls -l "$TMP_DIR"
+            cp "$TMP_DIR/scan-report.html" .
+          '''
+        }
+        publishHTML(target: [
+          allowMissing: false,
+          alwaysLinkToLastBuild: true,
+          keepAll: true,
+          reportDir: '.',
+          reportFiles: 'scan-report.html',
+          reportName: 'OWASP ZAP Baseline Scan Report'
+        ])
+      }
     }
-    publishHTML(target: [
-      allowMissing: false,
-      alwaysLinkToLastBuild: true,
-      keepAll: true,
-      reportDir: '.',
-      reportFiles: 'scan-report.html',
-      reportName: 'OWASP ZAP Baseline Scan Report'
-    ])
   }
 }
-
