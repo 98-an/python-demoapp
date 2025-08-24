@@ -85,15 +85,18 @@ pipeline {
         sudo docker volume create "$VOL" >/dev/null
         sudo docker rm -f zap-scan >/dev/null 2>&1 || true
 
-        # Lancer ZAP, écrire le rapport dans /zap/wrk (nom de fichier RELATIF)
+        # Lancer ZAP baseline
         sudo docker run --name zap-scan --network=host \
           --user 0:0 -v "$VOL":/zap/wrk:rw \
           zaproxy/zap-stable zap-baseline.py \
           -t http://13.50.222.204:5000 \
           -r scan-report.html -a || true
 
-        # Récupérer le rapport
-        sudo docker cp zap-scan:/zap/wrk/scan-report.html .
+        # Générer le rapport moderne riche (HTML avancé)
+        sudo docker exec zap-scan zap.sh -cmd -generateReport /zap/wrk/report-modern.html -reportType HTML
+
+        # Copier le rapport moderne
+        sudo docker cp zap-scan:/zap/wrk/report-modern.html .
 
         # Nettoyage
         sudo docker rm -f zap-scan >/dev/null 2>&1 || true
@@ -105,8 +108,8 @@ pipeline {
       alwaysLinkToLastBuild: true,
       keepAll: true,
       reportDir: '.',
-      reportFiles: 'scan-report.html',
-      reportName: 'OWASP ZAP Baseline Scan Report'
+      reportFiles: 'report-modern.html',
+      reportName: 'OWASP ZAP Modern HTML Report'
     ])
   }
 }
