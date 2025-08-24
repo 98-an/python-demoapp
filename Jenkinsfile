@@ -81,21 +81,22 @@ pipeline {
     script {
       sh '''
         set -e
-        TMP_DIR="/tmp/zap_${JOB_NAME}_${BUILD_NUMBER}"
-        mkdir -p "$TMP_DIR"            # jenkins en est propriétaire
-        chmod 777 "$TMP_DIR"           # écriture permise au user dans le conteneur
+        VOL="zap-wrk-${JOB_NAME}-${BUILD_NUMBER}"
+        sudo docker volume create "$VOL" >/dev/null
+        sudo docker rm -f zap-scan >/dev/null 2>&1 || true
 
-        # Lancer ZAP en user 1000:1000, HOME pointant sur /zap/wrk
-        sudo docker run --rm --network=host \
-          --user 1000:1000 --security-opt apparmor=unconfined \
-          -e HOME=/zap/wrk \
-          -v "$TMP_DIR":/zap/wrk:rw \
+        # Lancer ZAP en root dans le conteneur pour écrire librement dans /zap/wrk
+        sudo docker run --name zap-scan --network=host \
+          --user 0:0 -v "$VOL":/zap/wrk:rw \
           zaproxy/zap-stable zap-baseline.py \
-          -t http://13.50.222.204:5000 \
-          -r /zap/wrk/scan-report.html || true
+          -t http://13.50.222.204:5000 -r /zap/wrk/scan-report.html -a || true
 
-        ls -l "$TMP_DIR"
-        cp "$TMP_DIR/scan-report.html" .
+        # Récupérer le rapport dans le workspace
+        sudo docker cp zap-scan:/zap/wrk/scan-report.html .
+
+        # Nettoyage
+        sudo docker rm -f zap-scan >/dev/null 2>&1 || true
+        sudo docker volume rm "$VOL" >/dev/null 2>&1 || true
       '''
     }
     publishHTML(target: [
@@ -108,6 +109,7 @@ pipeline {
     ])
   }
 }
+
 
   }
 }
