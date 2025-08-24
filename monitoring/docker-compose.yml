@@ -1,73 +1,41 @@
 version: "3.8"
 
 services:
+  app:
+    image: ${APP_IMAGE}
+    container_name: demoapp
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    networks: [mon]
+
   prometheus:
-    image: prom/prometheus:v2.53.1
-    container_name: prometheus
+    image: prom/prometheus:v2.55.0
+    restart: unless-stopped
     ports:
       - "9090:9090"
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    restart: unless-stopped
-    networks:
-      - monitoring
+      - ./prometheus/data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    networks: [mon]
+    depends_on: [app]
 
   grafana:
     image: grafana/grafana:10.4.3
-    container_name: grafana
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
     volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
-      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
-    depends_on:
-      - prometheus
-    restart: unless-stopped
-    networks:
-      - monitoring
-
-    cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.47.2
-    container_name: cadvisor
-    ports:
-      - "8080:8080"
-    privileged: true
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:rw
-      - /sys:/sys:ro
-      - /var/snap/docker/common/var-lib-docker:/var/lib/docker:ro   # <= ICI
-      - /dev/disk/:/dev/disk:ro
-    restart: unless-stopped
-    networks:
-      - monitoring
-
-  node-exporter:
-    image: prom/node-exporter:v1.8.1
-    container_name: node-exporter
-    command:
-      - --path.rootfs=/host
-    pid: host
-    volumes:
-      - /:/host:ro,rslave
-    ports:
-      - "9100:9100"
-    restart: unless-stopped
-    networks:
-      - monitoring
-
-volumes:
-  prometheus_data:
-  grafana_data:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/data:/var/lib/grafana
+    networks: [mon]
+    depends_on: [prometheus]
 
 networks:
-  monitoring:
-    driver: bridge
+  mon: {}
