@@ -7,13 +7,14 @@ services:
     ports:
       - "9090:9090"
     command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     restart: unless-stopped
-    networks: [monitoring]
+    networks:
+      - monitoring
 
   grafana:
     image: grafana/grafana:10.4.3
@@ -27,28 +28,28 @@ services:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
       - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
-    depends_on: [prometheus]
+    depends_on:
+      - prometheus
     restart: unless-stopped
-    networks: [monitoring]
+    networks:
+      - monitoring
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.47.2
     container_name: cadvisor
-    # 8080 est pris par Jenkins: on publie cadvisor sur 8081
     ports:
-      - "8081:8080"
-    security_opt:
-      - seccomp:unconfined
+      - "8080:8080"
+    privileged: true
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:rw
       - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
+      - /var/snap/docker/common/var-lib-docker:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
     restart: unless-stopped
-    networks: [monitoring]
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-      
+    networks:
+      - monitoring
+
   node-exporter:
     image: prom/node-exporter:v1.8.1
     container_name: node-exporter
@@ -60,7 +61,8 @@ services:
     ports:
       - "9100:9100"
     restart: unless-stopped
-    networks: [monitoring]
+    networks:
+      - monitoring
 
 volumes:
   prometheus_data:
@@ -68,3 +70,4 @@ volumes:
 
 networks:
   monitoring:
+    driver: bridge
