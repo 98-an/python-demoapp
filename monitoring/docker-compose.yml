@@ -1,48 +1,48 @@
 version: "3.8"
 
-services:
-  app:
-    image: ${APP_IMAGE}
-    container_name: demoapp
-    restart: unless-stopped
-    ports:
-      - "5000:5000"
-    networks: [mon]
+networks:
+  mon:
 
+volumes:
+  prometheus-data:
+  grafana-data:
+
+services:
   prometheus:
-    image: prom/prometheus:v2.55.0
+    image: prom/prometheus:v2.54.1
     restart: unless-stopped
-    ports:
-      - "9090:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus/data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=15d"
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
     networks: [mon]
-    depends_on: [app]
 
   grafana:
-    image: grafana/grafana:10.4.3
+    image: grafana/grafana:10.4.5
     restart: unless-stopped
-    ports:
-      - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_SECURITY_ADMIN_PASSWORD=admin
     volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning
-      - ./grafana/data:/var/lib/grafana
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
     networks: [mon]
-    depends_on: [prometheus]
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     restart: unless-stopped
-    # Option A : pas d’exposition de port => pas de conflit avec Jenkins
-    # ports:
-    #   - "8081:8080"   # Option B : décommente si tu veux accéder à l’UI cAdvisor depuis ton navigateur
+    # pas de ports publiés => pas de conflit avec Jenkins
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:rw
@@ -51,6 +51,3 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
     networks: [mon]
-
-networks:
-  mon: {}
