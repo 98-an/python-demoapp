@@ -81,12 +81,14 @@ pipeline {
     script {
       sh '''
         set -e
-        TMP_DIR=/tmp/jenkins_zap_work
-        mkdir -p "$TMP_DIR"
-        chown 1000:1000 "$TMP_DIR"
+        TMP_DIR="/tmp/zap_${JOB_NAME}_${BUILD_NUMBER}"
+        mkdir -p "$TMP_DIR"            # jenkins en est propriétaire
+        chmod 777 "$TMP_DIR"           # écriture permise au user dans le conteneur
 
-        docker run --rm --network=host \
+        # Lancer ZAP en user 1000:1000, HOME pointant sur /zap/wrk
+        sudo docker run --rm --network=host \
           --user 1000:1000 --security-opt apparmor=unconfined \
+          -e HOME=/zap/wrk \
           -v "$TMP_DIR":/zap/wrk:rw \
           zaproxy/zap-stable zap-baseline.py \
           -t http://13.50.222.204:5000 \
@@ -106,5 +108,6 @@ pipeline {
     ])
   }
 }
+
   }
 }
