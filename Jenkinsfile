@@ -85,13 +85,14 @@ pipeline {
         sudo docker volume create "$VOL" >/dev/null
         sudo docker rm -f zap-scan >/dev/null 2>&1 || true
 
-        # Lancer ZAP en root dans le conteneur pour écrire librement dans /zap/wrk
+        # Lancer ZAP, écrire le rapport dans /zap/wrk (nom de fichier RELATIF)
         sudo docker run --name zap-scan --network=host \
           --user 0:0 -v "$VOL":/zap/wrk:rw \
           zaproxy/zap-stable zap-baseline.py \
-          -t http://13.50.222.204:5000 -r /zap/wrk/scan-report.html -a || true
+          -t http://13.50.222.204:5000 \
+          -r scan-report.html -a || true
 
-        # Récupérer le rapport dans le workspace
+        # Récupérer le rapport
         sudo docker cp zap-scan:/zap/wrk/scan-report.html .
 
         # Nettoyage
@@ -109,6 +110,7 @@ pipeline {
     ])
   }
 }
+
 
 
   }
