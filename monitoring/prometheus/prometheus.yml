@@ -2,25 +2,7 @@ global:
   scrape_interval: 15s
 
 scrape_configs:
-  - job_name: 'prometheus'
-    static_configs:
-      - targets: ['prometheus:9090']
-
-  - job_name: 'cadvisor'
-    static_configs:
-      - targets: ['cadvisor:8080']
-
-   - job_name: 'demoapp'
+  - job_name: "demoapp"
     metrics_path: /metrics
     static_configs:
-      - targets: ['13.50.222.204:5000']
-
-  - job_name: 'node'
-    static_configs:
-      - targets: ['13.50.222.204:9100'] 
-
-   - job_name: 'jenkins'
-    metrics_path: /prometheus
-    static_configs:
-      - targets: ['13.50.222.204:8080']    
-    
+      - targets: ["app:5000"]
