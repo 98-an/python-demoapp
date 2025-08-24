@@ -46,6 +46,8 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
     restart: unless-stopped
     networks: [monitoring]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   prometheus_data:
