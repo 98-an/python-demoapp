@@ -48,6 +48,19 @@ services:
     networks: [monitoring]
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      
+  node-exporter:
+    image: prom/node-exporter:v1.8.1
+    container_name: node-exporter
+    command:
+      - --path.rootfs=/host
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    ports:
+      - "9100:9100"
+    restart: unless-stopped
+    networks: [monitoring]
 
 volumes:
   prometheus_data:
