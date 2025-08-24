@@ -82,12 +82,10 @@ pipeline {
       sh '''
         set -e
         TMP_DIR=/tmp/jenkins_zap_work
-        sudo mkdir -p "$TMP_DIR"
-        # donner la propriété au user 'zap' (uid=1000) de l'image ZAP
-        sudo chown 1000:1000 "$TMP_DIR"
+        mkdir -p "$TMP_DIR"
+        chown 1000:1000 "$TMP_DIR"
 
-        # run ZAP avec l'UID 1000 + sans confinement AppArmor
-        sudo docker run --rm --network=host \
+        docker run --rm --network=host \
           --user 1000:1000 --security-opt apparmor=unconfined \
           -v "$TMP_DIR":/zap/wrk:rw \
           zaproxy/zap-stable zap-baseline.py \
