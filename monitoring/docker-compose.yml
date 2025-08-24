@@ -37,5 +37,20 @@ services:
     networks: [mon]
     depends_on: [prometheus]
 
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: unless-stopped
+    # Option A : pas d’exposition de port => pas de conflit avec Jenkins
+    # ports:
+    #   - "8081:8080"   # Option B : décommente si tu veux accéder à l’UI cAdvisor depuis ton navigateur
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks: [mon]
+
 networks:
   mon: {}
