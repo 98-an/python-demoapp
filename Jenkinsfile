@@ -65,35 +65,39 @@ pipeline {
         '''
       }
     }
-
     stage('OWASP ZAP Baseline') {
   steps {
     script {
-  sh '''
-    VOL="zap-wrk-${JOB_NAME}-${BUILD_NUMBER}"
-    sudo docker volume create "$VOL"
-    sudo docker rm -f zap-scan || true
-    sudo docker run --name zap-scan --network=host --user 0:0 -v "$VOL":/zap/wrk:rw -d zaproxy/zap-stable tail -f /dev/null
-    sudo docker exec zap-scan zap-baseline.py -t http://13.50.222.204:5000 -r /zap/wrk/scan-report.html -a
-    sudo docker exec zap-scan zap.sh -cmd -generateReport /zap/wrk/report-modern.html -reportType HTML
-    sudo docker cp zap-scan:/zap/wrk/report-modern.html .
-    sudo docker rm -f zap-scan
-    sudo docker volume rm "$VOL"
-  '''
-}
+      sh '''
+        set -e
+        VOL="zap-wrk-${JOB_NAME}-${BUILD_NUMBER}"
+        sudo docker volume create "$VOL" >/dev/null
+        sudo docker rm -f zap-scan >/dev/null 2>&1 || true
 
+        # Lancer ZAP, écrire le rapport dans /zap/wrk (nom de fichier RELATIF)
+        sudo docker run --name zap-scan --network=host \
+          --user 0:0 -v "$VOL":/zap/wrk:rw \
+          zaproxy/zap-stable zap-baseline.py \
+          -t http://13.50.222.204:5000 \
+          -r scan-report.html -a || true
+
+        # Récupérer le rapport
+        sudo docker cp zap-scan:/zap/wrk/scan-report.html .
+
+        # Nettoyage
+        sudo docker rm -f zap-scan >/dev/null 2>&1 || true
+        sudo docker volume rm "$VOL" >/dev/null 2>&1 || true
+      '''
+    }
     publishHTML(target: [
       allowMissing: false,
       alwaysLinkToLastBuild: true,
       keepAll: true,
       reportDir: '.',
-      reportFiles: 'report-modern.html',
-      reportName: 'OWASP ZAP Modern HTML Report'
+      reportFiles: 'scan-report.html',
+      reportName: 'OWASP ZAP Baseline Scan Report'
     ])
   }
 }
-
-
-
   }
 }
