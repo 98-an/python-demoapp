@@ -79,14 +79,16 @@ pipeline {
     stage('OWASP ZAP Full Scan') {
     steps {
         script {
-            sh """
+            sh '''
+                sudo mkdir -p /tmp/jenkins_zap_work /tmp/jenkins_zap_home
+                sudo chmod 777 /tmp/jenkins_zap_work /tmp/jenkins_zap_home
                 sudo docker run --rm \
                   -v /tmp/jenkins_zap_work:/zap/wrk:rw \
                   -v /tmp/jenkins_zap_home:/home/zap \
                   zaproxy/zap-stable \
                   zap-full-scan.py -t http://13.50.222.204:5000 -r /zap/wrk/zap-full-report.html -a
                 cp /tmp/jenkins_zap_work/zap-full-report.html .
-            """
+            '''
         }
         publishHTML(target: [
             allowMissing: false,
@@ -98,6 +100,5 @@ pipeline {
         ])
     }
 }
-
   }
 }
