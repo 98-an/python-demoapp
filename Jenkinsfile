@@ -77,28 +77,27 @@ pipeline {
 }
 
     stage('OWASP ZAP Full Scan') {
-    steps {
+      steps {
         script {
-            sh '''
-                sudo mkdir -p /tmp/jenkins_zap_work /tmp/jenkins_zap_home
-                sudo chmod 777 /tmp/jenkins_zap_work /tmp/jenkins_zap_home
-                sudo docker run --rm \
-                  -v /tmp/jenkins_zap_work:/zap/wrk:rw \
-                  -v /tmp/jenkins_zap_home:/home/zap \
-                  zaproxy/zap-stable \
-                  zap-full-scan.py -t http://13.50.222.204:5000 -r /zap/wrk/zap-full-report.html -a
-                cp /tmp/jenkins_zap_work/zap-full-report.html .
-            '''
+          sh '''
+            TMP_DIR=/tmp/jenkins_zap_work
+                mkdir -p $TMP_DIR
+                chmod 777 $TMP_DIR
+                sudo docker run --rm -v $TMP_DIR:/zap/wrk:rw --network=host zaproxy/zap-stable \\
+                  zap-baseline.py -t http://13.50.222.204:5000 -r /zap/wrk/scan-report.html
+                ls -l $TMP_DIR
+                cp $TMP_DIR/scan-report.html .
+          '''
         }
         publishHTML(target: [
-            allowMissing: false,
-            alwaysLinkToLastBuild: true,
-            keepAll: true,
-            reportDir: '.',
-            reportFiles: 'zap-full-report.html',
-            reportName: "OWASP ZAP Full Scan Report"
+          allowMissing: false,
+          alwaysLinkToLastBuild: true,
+          keepAll: true,
+          reportDir: '.',
+          reportFiles: 'scan-report.html',
+          reportName: 'OWASP ZAP Baseline Scan Report'
         ])
+      }
     }
-}
   }
 }
