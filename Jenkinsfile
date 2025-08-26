@@ -28,14 +28,14 @@ pipeline {
 
     stage('Docker Build') {
       steps {
-        sh 'docker build -f container/Dockerfile -t yasdevsec/python-demoapp:v2 .'
+        sh 'docker build -f container/Dockerfile -t yasdevsec/python-demoapp:v3 .'
       }
     }
 
     stage('Trivy Scan') {
       steps {
         script {
-          def dockerImage = "yasdevsec/python-demoapp:v2"
+          def dockerImage = "yasdevsec/python-demoapp:v3"
           sh "trivy image ${dockerImage} --no-progress --severity HIGH,CRITICAL"
         }
       }
@@ -47,7 +47,7 @@ pipeline {
           sh '''
             echo "$PASS" | docker login -u "$USER" --password-stdin
             docker images | grep yasdevsec/python-demoapp || true
-            docker push yasdevsec/python-demoapp:v2
+            docker push yasdevsec/python-demoapp:v3
           '''
         }
       }
@@ -57,10 +57,10 @@ pipeline {
       steps {
         sh '''
           # Supprime tous les conteneurs basés sur l'image poussée
-          sudo docker ps -aq --filter "ancestor=yasdevsec/python-demoapp:v2" | xargs -r sudo docker rm -f
+          sudo docker ps -aq --filter "ancestor=yasdevsec/python-demoapp:v3" | xargs -r sudo docker rm -f
 
           # Lance le nouveau conteneur
-          sudo docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v2
+          sudo docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v3
           echo "Application démarrée sur http://13.50.222.204:5000"
         '''
       }
