@@ -1,18 +1,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: zomato
+  name: python-demoapp
   labels:
-    app: zomato
+    app: python-demoapp
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: zomato
+      app: python-demoapp
   template:
     metadata:
       labels:
-        app: zomato
+        app: python-demoapp
     spec:
       containers:
       - name: python-demoapp
