@@ -2,6 +2,7 @@ pipeline {
   agent any
 
   stages {
+
     stage('Git Checkout') {
       steps {
         checkout scm
@@ -15,6 +16,14 @@ pipeline {
           withSonarQubeEnv('sonar-server') {
             sh "${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=pythonapp -Dsonar.sources=src"
           }
+        }
+      }
+    }
+
+    stage('Code Quality Gate') {
+      steps {
+        script {
+          waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
         }
       }
     }
@@ -65,39 +74,41 @@ pipeline {
         '''
       }
     }
+
     stage('OWASP ZAP Baseline') {
-  steps {
-    script {
-      sh '''
-        set -e
-        VOL="zap-wrk-${JOB_NAME}-${BUILD_NUMBER}"
-        sudo docker volume create "$VOL" >/dev/null
-        sudo docker rm -f zap-scan >/dev/null 2>&1 || true
+      steps {
+        script {
+          sh '''
+            set -e
+            VOL="zap-wrk-${JOB_NAME}-${BUILD_NUMBER}"
+            sudo docker volume create "$VOL" >/dev/null
+            sudo docker rm -f zap-scan >/dev/null 2>&1 || true
 
-        # Lancer ZAP, écrire le rapport dans /zap/wrk (nom de fichier RELATIF)
-        sudo docker run --name zap-scan --network=host \
-          --user 0:0 -v "$VOL":/zap/wrk:rw \
-          zaproxy/zap-stable zap-baseline.py \
-          -t http://13.50.222.204:5000 \
-          -r scan-report.html -a || true
+            # Lancer ZAP, écrire le rapport dans /zap/wrk (nom de fichier RELATIF)
+            sudo docker run --name zap-scan --network=host \
+              --user 0:0 -v "$VOL":/zap/wrk:rw \
+              zaproxy/zap-stable zap-baseline.py \
+              -t http://13.50.222.204:5000 \
+              -r scan-report.html -a || true
 
-        # Récupérer le rapport
-        sudo docker cp zap-scan:/zap/wrk/scan-report.html .
+            # Récupérer le rapport
+            sudo docker cp zap-scan:/zap/wrk/scan-report.html .
 
-        # Nettoyage
-        sudo docker rm -f zap-scan >/dev/null 2>&1 || true
-        sudo docker volume rm "$VOL" >/dev/null 2>&1 || true
-      '''
+            # Nettoyage
+            sudo docker rm -f zap-scan >/dev/null 2>&1 || true
+            sudo docker volume rm "$VOL" >/dev/null 2>&1 || true
+          '''
+        }
+        publishHTML(target: [
+          allowMissing: false,
+          alwaysLinkToLastBuild: true,
+          keepAll: true,
+          reportDir: '.',
+          reportFiles: 'scan-report.html',
+          reportName: 'OWASP ZAP Baseline Scan Report'
+        ])
+      }
     }
-    publishHTML(target: [
-      allowMissing: false,
-      alwaysLinkToLastBuild: true,
-      keepAll: true,
-      reportDir: '.',
-      reportFiles: 'scan-report.html',
-      reportName: 'OWASP ZAP Baseline Scan Report'
-    ])
-  }
-}
+
   }
 }
