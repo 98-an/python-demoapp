@@ -18,4 +18,4 @@ spec:
       - name: python-demoapp
         image: yasdevsec/python-demoapp:v3
         ports:
-        - containerPort: 5000
+        - containerPort: 3000
