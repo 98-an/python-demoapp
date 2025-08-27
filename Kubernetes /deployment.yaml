@@ -16,6 +16,6 @@ spec:
     spec:
       containers:
       - name: python-demoapp
-        image: yasdevsec/python-demoapp:latest
+        image: yasdevsec/python-demoapp:v3
         ports:
         - containerPort: 3000
