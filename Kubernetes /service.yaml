@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: zomato
+  name: python-demoapp
   labels:
-    app: zomato
+    app: python-demoapp
 spec:
   type: NodePort
   ports:
@@ -11,4 +11,4 @@ spec:
     targetPort: 3000
     nodePort: 30001
   selector:
-    app: zomato
+    app: python-demoapp
