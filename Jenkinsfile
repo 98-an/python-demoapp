@@ -69,8 +69,8 @@ pipeline {
           sudo docker ps -aq --filter "ancestor=yasdevsec/python-demoapp:v3" | xargs -r sudo docker rm -f
 
           # Lance le nouveau conteneur
-          sudo docker run -d --name py -p 3000:3000 yasdevsec/python-demoapp:v3
-          echo "Application démarrée sur http://13.50.222.204:3000"
+          sudo docker run -d --name py -p 5000:5000 yasdevsec/python-demoapp:v3
+          echo "Application démarrée sur http://13.50.222.204:5000"
         '''
       }
     }
@@ -88,7 +88,7 @@ pipeline {
             sudo docker run --name zap-scan --network=host \
               --user 0:0 -v "$VOL":/zap/wrk:rw \
               zaproxy/zap-stable zap-baseline.py \
-              -t http://13.50.222.204:3000 \
+              -t http://13.50.222.204:5000 \
               -r scan-report.html -a || true
 
             # Récupérer le rapport
