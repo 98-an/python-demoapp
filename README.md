@@ -110,9 +110,11 @@ SonarQube exposes detailed code quality metrics via its Prometheus exporter (see
 These metrics are scraped by Prometheus and visualized in Grafana, making it easy to monitor bugs, vulnerabilities, coverage, and technical debt in real time throughout the CI/CD workflow.
 
 ![SonarQube Prometheus Exporter](https://github.com/user-attachments/assets/b0e757e4-89f7-4fda-b57d-2faa9fcabe5f)
+
 *Configuring SonarQube's Prometheus exporter to expose code quality metrics.*
 
 ![Prometheus SonarQube Job](https://github.com/user-attachments/assets/71e7226f-ee77-4652-bb6c-e2818b0082d6)
+
 *Prometheus configuration to scrape SonarQube metrics.*
 
 Grafana dashboards provide a unified view of infrastructure and code health, supporting proactivity and fast remediation.
