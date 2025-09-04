@@ -51,7 +51,7 @@ The pipeline automates from code commit to deployment, incorporating static and 
 
 ### CI Steps
 
-![SonarQube Scan](docs/images/sonarqube-scan.png)  
+![SonarQube Scan]!(https://github.com/user-attachments/assets/6e6c574c-25dd-4063-8821-0a55e9f91893)
 *Static code analysis and secrets detection with SonarQube.*
 
 - Code quality and security analysis triggered on each push  
