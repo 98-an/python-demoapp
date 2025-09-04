@@ -88,9 +88,11 @@ The pipeline automates from code commit to deployment, incorporating static and 
 
 ## Monitoring Setup
 
-![Grafana Dashboard](docs/images/grafana-dashboard.png)  
+![Grafana Dashboard](https://github.com/user-attachments/assets/c84156d6-e44f-43e6-a449-892341b67499)
 *Real-time monitoring dashboards displaying application and cluster metrics.*
 
+![Prometheus Configuration](https://github.com/user-attachments/assets/c3d1297f-6190-4a60-87d1-3facc13219d1)
+*Prometheus metrics 
 - Metrics collected via Prometheus and Node Exporter  
 - Alerts configured for key performance and security indicators  
 
