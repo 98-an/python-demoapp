@@ -26,7 +26,8 @@ It integrates continuous security checks, container image scanning, GitOps-based
 
 ## Architecture Overview
 
-![Pipeline Architecture](./images/Screenshot-2025-09-04-080624.png)
+![Pipeline Architecture](https://github.com/user-attachments/assets/dba94644-c3a4-4a37-8b87-b8a966b4f247)
+
 *Figure 1: Overview of the DevSecOps CI/CD pipeline integrating Jenkins, SonarQube, Docker, ArgoCD, Prometheus, and Grafana.*
 
 The pipeline automates from code commit to deployment, incorporating static and dynamic security testing, container scanning, and continuous monitoring.
