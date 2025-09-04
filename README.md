@@ -67,7 +67,7 @@ The pipeline automates from code commit to deployment, incorporating static and 
 
 ### GitOps Deployment
 
-![ArgoCD Sync](docs/images/argocd-sync.png)  
+![ArgoCD Sync](https://github.com/user-attachments/assets/484925e6-7be3-40e2-85e0-e3f1b78b9e3)  
 *Automated synchronization and deployment of Kubernetes manifests via ArgoCD.*
 
 - Git repository serves as single source of truth  
