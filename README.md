@@ -51,19 +51,19 @@ The pipeline automates from code commit to deployment, incorporating static and 
 
 ### CI Steps
 
-![SonarQube Scan](https://github.com/user-attachments/assets/6e6c574c-25dd-4063-8821-0a55e9f91893)
-*Static code analysis and secrets detection with SonarQube.*
+Each code commit triggers a complete CI/CD pipeline, checked at every stage for quality and security:
 
-- Code quality and security analysis triggered on each push  
-- Block pipeline on Quality Gate failure ensuring code compliance
+![Jenkins Pipeline Stages](https://github.com/user-attachments/assets/008b4e74-0b58-4467-82ac-c024c73fe1d6)  
+*Jenkins pipeline triggered for each commit, with all build, scan, and deployment stages visible.*
 
-### Build & Push Docker Images
+The pipeline runs:
 
-![Docker Build](docs/images/docker-build.png)  
-*Automated Docker image build and vulnerability scanning with Trivy.*
-
-- Build of Docker containers after code validation  
-- Scanning images to detect vulnerabilities prior to deployment
+- Static analysis and secrets detection (SonarQube)
+- Code Quality Gate validation
+- Dependency and image scan (OWASP Dependency-Check, Trivy)
+- Container build and push
+- Automated deployment to Kubernetes via ArgoCD
+- Runtime vulnerability scan (OWASP ZAP)
 
 ### GitOps Deployment
 
@@ -77,12 +77,18 @@ The pipeline automates from code commit to deployment, incorporating static and 
 
 ## Security Integrations
 
-- Static Application Security Testing (SAST) with SonarQube  
-- Dynamic Application Security Testing (DAST) using OWASP ZAP  
+- Static Application Security Testing (SAST) with SonarQube
+![SonarQube Scan](https://github.com/user-attachments/assets/6e6c574c-25dd-4063-8821-0a55e9f91893)
+*Static code analysis and secrets detection with SonarQube.*
+
+   - Code quality and security analysis triggered on each push  
+   - Block pipeline on Quality Gate failure ensuring code compliance
+ 
+- Dynamic Application Security Testing (DAST) using OWASP ZAP
+![OWASP ZAP Scan Report](https://github.com/user-attachments/assets/7c01ef3e-692d-45c0-abb2-f1c44a5c91b7)  
+*Figure: Example OWASP ZAP report — vulnerabilities detected in the deployed app.*
 - Dependency scanning using OWASP Dependency-Check and Trivy  
 - Enforced Quality Gates to prevent insecure code release  
-
-*Add screenshots of scan results, alerts, or Quality Gate dashboards.*
 
 ---
 
@@ -92,11 +98,25 @@ The pipeline automates from code commit to deployment, incorporating static and 
 *Real-time monitoring dashboards displaying application and cluster metrics.*
 
 ![Prometheus Configuration](https://github.com/user-attachments/assets/c3d1297f-6190-4a60-87d1-3facc13219d1)
-*Prometheus metrics 
+*Figure: Prometheus collecting metrics from Jenkins, Kubernetes, and system exporters.*
 - Metrics collected via Prometheus and Node Exporter  
 - Alerts configured for key performance and security indicators  
 
 ---
+
+## Monitoring SonarQube in Grafana
+
+SonarQube exposes detailed code quality metrics via its Prometheus exporter (see below).  
+These metrics are scraped by Prometheus and visualized in Grafana, making it easy to monitor bugs, vulnerabilities, coverage, and technical debt in real time throughout the CI/CD workflow.
+
+![SonarQube Prometheus Exporter](https://github.com/user-attachments/assets/b0e757e4-89f7-4fda-b57d-2faa9fcabe5f)
+*Configuring SonarQube's Prometheus exporter to expose code quality metrics.*
+
+![Prometheus SonarQube Job](https://github.com/user-attachments/assets/71e7226f-ee77-4652-bb6c-e2818b0082d6)
+*Prometheus configuration to scrape SonarQube metrics.*
+
+Grafana dashboards provide a unified view of infrastructure and code health, supporting proactivity and fast remediation.
+
 
 ## Features & Results
 
